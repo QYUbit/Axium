@@ -4,12 +4,12 @@ go 1.23
 
 toolchain go1.23.8
 
-require github.com/QYUbit/Bufti/go v0.0.0-20250401205047-216c35748c75 // direct
+require github.com/google/uuid v1.6.0
 
 require (
+	github.com/QYUbit/Butil/go v0.0.0-20250704231957-d97cc2b56720 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
 	github.com/google/pprof v0.0.0-20210407192527-94a9f03dee38 // indirect
-	github.com/google/uuid v1.6.0
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
 	github.com/quic-go/quic-go v0.50.1 // indirect
 	go.uber.org/mock v0.5.0 // indirect

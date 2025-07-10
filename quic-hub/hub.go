@@ -6,14 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
 )
 
 var (
-	ErrClientNotFound = errors.New("can not find client")
-	ErrTopicNotFound  = errors.New("can not find topic")
+	ErrClientNotFound = errors.New("client not found")
+	ErrTopicNotFound  = errors.New("topic not found")
+	ErrHubClosed      = errors.New("hub is closed")
 )
 
 var bufferPool = &sync.Pool{
@@ -22,12 +24,28 @@ var bufferPool = &sync.Pool{
 	},
 }
 
+type Connection interface {
+	Close(int, string)
+	GetRemoteAddress() string
+}
+
+type ConnectionWrapper struct {
+	conn quic.Connection
+}
+
+func (cw ConnectionWrapper) Close(code int, errorString string) {
+	cw.conn.CloseWithError(quic.ApplicationErrorCode(code), errorString)
+}
+
+func (cw ConnectionWrapper) GetRemoteAddress() string {
+	return cw.conn.RemoteAddr().String()
+}
+
 type ClientHub interface {
-	RegisterClient(string, any) error
 	UnregisterClient(string) error
 	GetClientIds() []string
 	Send(string, []byte) error
-	OnConnect(any) error
+	OnConnect(func(func(string), Connection))
 	OnMessage(func(string, []byte))
 }
 
@@ -42,41 +60,53 @@ type PubSubHub interface {
 	GetClientIdsOfTopic(string) ([]string, error)
 }
 
-func a(c PubSubHub) {}
+type hubOperationType int
 
-func A() {
-	h, _ := NewQuicHub("localhost:8080", nil, nil)
-	a(h)
+const (
+	OpRegisterClient hubOperationType = iota
+	OpUnregisterClient
+	OpSendMessage
+	OpCreateTopic
+	OpDeleteTopic
+	OpSubscribe
+	OpUnsubscribe
+	OpPublish
+)
+
+type hubOperation struct {
+	Type     hubOperationType
+	ClientId string
+	TopicId  string
+	Client   *Client
+	Topic    *Topic
+	Message  []byte
+	Response chan error
 }
 
 type Hub struct {
-	listener    *quic.Listener
-	clients     map[string]*Client
-	topics      map[string]*Topic
-	register    chan *Client
-	unregister  chan *Client
-	createTopic chan *Topic
-	deleteTopic chan *Topic
-	ctx         context.Context
-	cancel      context.CancelFunc
-	clientMu    sync.RWMutex
-	topicMu     sync.RWMutex
-	onConnect   func(quic.Connection)
-	onMessage   func(string, []byte)
+	listener   *quic.Listener
+	clients    map[string]*Client
+	topics     map[string]*Topic
+	operations chan hubOperation
+	ctx        context.Context
+	cancel     context.CancelFunc
+	clientMu   sync.RWMutex
+	topicMu    sync.RWMutex
+	onConnect  func(func(string), Connection)
+	onMessage  func(string, []byte)
+	closed     bool
+	closedMu   sync.RWMutex
 }
 
 func NewQuicHub(address string, tlsConf *tls.Config, config *quic.Config) (*Hub, error) {
 	h := &Hub{
-		clients:     make(map[string]*Client),
-		topics:      make(map[string]*Topic),
-		register:    make(chan *Client),
-		unregister:  make(chan *Client),
-		createTopic: make(chan *Topic),
-		deleteTopic: make(chan *Topic),
+		clients:    make(map[string]*Client),
+		topics:     make(map[string]*Topic),
+		operations: make(chan hubOperation, 100),
 	}
 
-	h.onConnect = func(conn quic.Connection) {
-		h.RegisterClient(uuid.New().String(), conn)
+	h.onConnect = func(accept func(string), conn Connection) {
+		accept(uuid.New().String())
 	}
 
 	h.onMessage = func(id string, b []byte) {
@@ -95,18 +125,30 @@ func NewQuicHub(address string, tlsConf *tls.Config, config *quic.Config) (*Hub,
 	}
 	h.listener = listener
 
-	go func() {
-		for {
-			conn, err := listener.Accept(context.Background())
-			if err != nil {
+	go h.acceptConnections()
+
+	return h, nil
+}
+
+func (h *Hub) acceptConnections() {
+	for {
+		conn, err := h.listener.Accept(h.ctx)
+		if err != nil {
+			select {
+			case <-h.ctx.Done():
+				return
+			default:
 				fmt.Printf("failed accepting connection: %s\n", err)
 				continue
 			}
-			go h.onConnect(conn)
 		}
-	}()
 
-	return h, nil
+		accept := func(id string) {
+			h.RegisterClient(id, conn)
+		}
+		connWrapper := ConnectionWrapper{conn: conn}
+		go h.onConnect(accept, connWrapper)
+	}
 }
 
 func (h *Hub) run() {
@@ -115,153 +157,288 @@ func (h *Hub) run() {
 		case <-h.ctx.Done():
 			return
 
-		case client := <-h.register:
-			h.clientMu.Lock()
-			h.clients[client.id] = client
-			h.clientMu.Unlock()
-
-		case client := <-h.unregister:
-			h.clientMu.Lock()
-			if _, ok := h.clients[client.id]; ok {
-				delete(h.clients, client.id)
-				close(client.send)
-			}
-			h.clientMu.Unlock()
-
-		case topic := <-h.createTopic:
-			h.topicMu.Lock()
-			h.topics[topic.id] = topic
-			h.topicMu.Unlock()
-
-		case topic := <-h.deleteTopic:
-			h.topicMu.Lock()
-			if _, ok := h.topics[topic.id]; ok {
-				delete(h.topics, topic.id)
-				close(topic.subscribe)
-				close(topic.unsubscribe)
-				close(topic.publish)
-			}
-			h.topicMu.Unlock()
+		case op := <-h.operations:
+			h.handleOperation(op)
 		}
 	}
 }
 
+func (h *Hub) handleOperation(op hubOperation) {
+	var err error
+
+	switch op.Type {
+	case OpRegisterClient:
+		h.clientMu.Lock()
+		h.clients[op.Client.id] = op.Client
+		h.clientMu.Unlock()
+		go op.Client.ReadPump(h)
+		go op.Client.WritePump(h)
+
+	case OpUnregisterClient:
+		h.clientMu.Lock()
+		if client, ok := h.clients[op.ClientId]; ok {
+			delete(h.clients, op.ClientId)
+			close(client.send)
+			client.conn.CloseWithError(0, "client unregistered")
+		}
+		h.clientMu.Unlock()
+
+	case OpSendMessage:
+		h.clientMu.RLock()
+		client, exists := h.clients[op.ClientId]
+		h.clientMu.RUnlock()
+
+		if !exists {
+			err = ErrClientNotFound
+		} else {
+			select {
+			case client.send <- op.Message:
+				// Message sent successfully
+			case <-time.After(time.Second):
+				err = fmt.Errorf("timeout sending message to client %s", op.ClientId)
+			}
+		}
+
+	case OpCreateTopic:
+		h.topicMu.Lock()
+		h.topics[op.Topic.id] = op.Topic
+		h.topicMu.Unlock()
+		go op.Topic.run(h.ctx)
+
+	case OpDeleteTopic:
+		h.topicMu.Lock()
+		if topic, ok := h.topics[op.TopicId]; ok {
+			delete(h.topics, op.TopicId)
+			close(topic.subscribe)
+			close(topic.unsubscribe)
+			close(topic.publish)
+		}
+		h.topicMu.Unlock()
+
+	case OpSubscribe:
+		h.topicMu.RLock()
+		topic, topicExists := h.topics[op.TopicId]
+		h.topicMu.RUnlock()
+
+		if !topicExists {
+			err = ErrTopicNotFound
+		} else {
+			h.clientMu.RLock()
+			client, clientExists := h.clients[op.ClientId]
+			h.clientMu.RUnlock()
+
+			if !clientExists {
+				err = ErrClientNotFound
+			} else {
+				select {
+				case topic.subscribe <- client:
+					// Subscribed successfully
+				case <-time.After(time.Second):
+					err = fmt.Errorf("timeout subscribing client %s to topic %s", op.ClientId, op.TopicId)
+				}
+			}
+		}
+
+	case OpUnsubscribe:
+		h.topicMu.RLock()
+		topic, topicExists := h.topics[op.TopicId]
+		h.topicMu.RUnlock()
+
+		if !topicExists {
+			err = ErrTopicNotFound
+		} else {
+			h.clientMu.RLock()
+			client, clientExists := h.clients[op.ClientId]
+			h.clientMu.RUnlock()
+
+			if !clientExists {
+				err = ErrClientNotFound
+			} else {
+				select {
+				case topic.unsubscribe <- client:
+					// Unsubscribed successfully
+				case <-time.After(time.Second):
+					err = fmt.Errorf("timeout unsubscribing client %s from topic %s", op.ClientId, op.TopicId)
+				}
+			}
+		}
+
+	case OpPublish:
+		h.topicMu.RLock()
+		topic, exists := h.topics[op.TopicId]
+		h.topicMu.RUnlock()
+
+		if !exists {
+			err = ErrTopicNotFound
+		} else {
+			select {
+			case topic.publish <- op.Message:
+				// Published successfully
+			case <-time.After(time.Second):
+				err = fmt.Errorf("timeout publishing to topic %s", op.TopicId)
+			}
+		}
+	}
+
+	if op.Response != nil {
+		op.Response <- err
+	}
+}
+
+func (h *Hub) isClosed() bool {
+	h.closedMu.RLock()
+	defer h.closedMu.RUnlock()
+	return h.closed
+}
+
 func (h *Hub) Close() error {
+	h.closedMu.Lock()
+	h.closed = true
+	h.closedMu.Unlock()
+
 	h.cancel()
 	return h.listener.Close()
 }
 
-func (h *Hub) RegisterClient(clientId string, anyConn any) error {
-	conn, ok := anyConn.(quic.Connection)
-	if !ok {
-		return fmt.Errorf("conn has to be of type quic.Connection, got: %T", anyConn)
+func (h *Hub) RegisterClient(clientId string, conn quic.Connection) error {
+	if h.isClosed() {
+		return ErrHubClosed
 	}
+
 	client := NewClient(clientId, conn)
-	h.register <- client
-	go client.ReadPump(h)
-	go client.WritePump(h)
-	return nil
+	response := make(chan error, 1)
+
+	h.operations <- hubOperation{
+		Type:     OpRegisterClient,
+		Client:   client,
+		Response: response,
+	}
+
+	return <-response
 }
 
 func (h *Hub) UnregisterClient(id string) error {
-	h.clientMu.RLock()
-	client, exists := h.clients[id]
-	if !exists {
-		return ErrClientNotFound
+	if h.isClosed() {
+		return ErrHubClosed
 	}
-	h.clientMu.RUnlock()
-	h.unregister <- client
-	return client.conn.CloseWithError(0, "closed")
+
+	response := make(chan error, 1)
+
+	h.operations <- hubOperation{
+		Type:     OpUnregisterClient,
+		ClientId: id,
+		Response: response,
+	}
+
+	return <-response
 }
 
 func (h *Hub) Send(clientId string, message []byte) error {
-	h.clientMu.RLock()
-	defer h.clientMu.RUnlock()
-
-	client, exists := h.clients[clientId]
-	if !exists {
-		return ErrClientNotFound
+	if h.isClosed() {
+		return ErrHubClosed
 	}
 
-	client.send <- message
-	return nil
-}
+	response := make(chan error, 1)
 
-func (h *Hub) Publish(topicId string, message []byte) error {
-	h.topicMu.RLock()
-	defer h.topicMu.RUnlock()
-
-	topic, exists := h.topics[topicId]
-	if !exists {
-		return ErrTopicNotFound
+	h.operations <- hubOperation{
+		Type:     OpSendMessage,
+		ClientId: clientId,
+		Message:  message,
+		Response: response,
 	}
 
-	topic.publish <- message
-	return nil
+	return <-response
 }
 
 func (h *Hub) CreateTopic(id string) error {
+	if h.isClosed() {
+		return ErrHubClosed
+	}
+
 	topic := NewTopic(id)
-	go topic.run(h.ctx)
-	h.createTopic <- topic
-	return nil
+	response := make(chan error, 1)
+
+	h.operations <- hubOperation{
+		Type:     OpCreateTopic,
+		Topic:    topic,
+		Response: response,
+	}
+
+	return <-response
 }
 
 func (h *Hub) DeleteTopic(id string) error {
-	h.topicMu.RLock()
-	defer h.topicMu.RUnlock()
-
-	topic, exists := h.topics[id]
-	if !exists {
-		return ErrTopicNotFound
+	if h.isClosed() {
+		return ErrHubClosed
 	}
 
-	h.deleteTopic <- topic
-	return nil
+	response := make(chan error, 1)
+
+	h.operations <- hubOperation{
+		Type:     OpDeleteTopic,
+		TopicId:  id,
+		Response: response,
+	}
+
+	return <-response
 }
 
 func (h *Hub) Subscribe(clientId string, topicId string) error {
-	h.topicMu.RLock()
-	defer h.topicMu.RUnlock()
-	topic, exists := h.topics[topicId]
-	if !exists {
-		return ErrTopicNotFound
+	if h.isClosed() {
+		return ErrHubClosed
 	}
 
-	h.clientMu.RLock()
-	defer h.clientMu.RUnlock()
-	client, exists := h.clients[clientId]
-	if !exists {
-		return ErrClientNotFound
+	response := make(chan error, 1)
+
+	h.operations <- hubOperation{
+		Type:     OpSubscribe,
+		ClientId: clientId,
+		TopicId:  topicId,
+		Response: response,
 	}
 
-	topic.subscribe <- client
-	return nil
+	return <-response
 }
 
 func (h *Hub) Unsubscribe(clientId string, topicId string) error {
-	h.topicMu.RLock()
-	defer h.topicMu.RUnlock()
-	topic, exists := h.topics[topicId]
-	if !exists {
-		return ErrTopicNotFound
+	if h.isClosed() {
+		return ErrHubClosed
 	}
 
-	h.clientMu.RLock()
-	defer h.clientMu.RUnlock()
-	client, exists := h.clients[clientId]
-	if !exists {
-		return ErrClientNotFound
+	response := make(chan error, 1)
+
+	h.operations <- hubOperation{
+		Type:     OpUnsubscribe,
+		ClientId: clientId,
+		TopicId:  topicId,
+		Response: response,
 	}
 
-	topic.unsubscribe <- client
-	return nil
+	return <-response
+}
+
+func (h *Hub) Publish(topicId string, message []byte) error {
+	if h.isClosed() {
+		return ErrHubClosed
+	}
+
+	response := make(chan error, 1)
+
+	h.operations <- hubOperation{
+		Type:     OpPublish,
+		TopicId:  topicId,
+		Message:  message,
+		Response: response,
+	}
+
+	return <-response
 }
 
 func (h *Hub) GetClientIds() []string {
 	h.clientMu.RLock()
 	defer h.clientMu.RUnlock()
-	var ids []string
+
+	ids := make([]string, 0, len(h.clients))
 	for id := range h.clients {
 		ids = append(ids, id)
 	}
@@ -271,7 +448,8 @@ func (h *Hub) GetClientIds() []string {
 func (h *Hub) GetTopicIds() []string {
 	h.topicMu.RLock()
 	defer h.topicMu.RUnlock()
-	var ids []string
+
+	ids := make([]string, 0, len(h.topics))
 	for id := range h.topics {
 		ids = append(ids, id)
 	}
@@ -289,13 +467,8 @@ func (h *Hub) GetClientIdsOfTopic(topicId string) ([]string, error) {
 	return topic.getClientIds(), nil
 }
 
-func (h *Hub) OnConnect(anyFn any) error {
-	fn, ok := anyFn.(func(quic.Connection))
-	if !ok {
-		return fmt.Errorf("conn has to be of type quic.Connection, got: %T", anyFn)
-	}
+func (h *Hub) OnConnect(fn func(func(string), Connection)) {
 	h.onConnect = fn
-	return nil
 }
 
 func (h *Hub) OnMessage(fn func(string, []byte)) {

@@ -1,6 +1,8 @@
 package quichub
 
 import (
+	"fmt"
+
 	"github.com/quic-go/quic-go"
 )
 
@@ -30,29 +32,50 @@ func (c *Client) ReadPump(hub *Hub) {
 		}
 
 		buf := bufferPool.Get().([]byte)
-		defer bufferPool.Put(buf)
-
 		n, err := stream.Read(buf)
 		if err != nil {
+			bufferPool.Put(buf)
 			break
 		}
-		hub.onMessage(c.id, buf[:n])
+
+		message := make([]byte, n)
+		copy(message, buf[:n])
 		bufferPool.Put(buf)
+
+		hub.onMessage(c.id, message)
 	}
 }
 
 func (c *Client) WritePump(hub *Hub) {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Printf("WritePump panic for client %s: %v\n", c.id, err)
+		}
+	}()
+
 	for {
 		select {
 		case <-hub.ctx.Done():
 			return
 
-		case message := <-c.send:
+		case message, ok := <-c.send:
+			if !ok {
+				return
+			}
+
 			stream, err := c.conn.OpenStreamSync(hub.ctx)
 			if err != nil {
-				break
+				fmt.Printf("Error opening stream for client %s: %v\n", c.id, err)
+				return
 			}
-			stream.Write(message)
+
+			_, err = stream.Write(message)
+			if err != nil {
+				fmt.Printf("Error writing to stream for client %s: %v\n", c.id, err)
+				return
+			}
+
+			stream.Close()
 		}
 	}
 }
