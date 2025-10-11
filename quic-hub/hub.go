@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QYUbit/Axium/core"
 	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
 )
@@ -24,11 +25,7 @@ var bufferPool = &sync.Pool{
 	},
 }
 
-type Connection interface {
-	Close(int, string)
-	GetRemoteAddress() string
-}
-
+// Implements core.AxiumConnection
 type ConnectionWrapper struct {
 	conn quic.Connection
 }
@@ -39,25 +36,6 @@ func (cw ConnectionWrapper) Close(code int, errorString string) {
 
 func (cw ConnectionWrapper) GetRemoteAddress() string {
 	return cw.conn.RemoteAddr().String()
-}
-
-type ClientHub interface {
-	UnregisterClient(string) error
-	GetClientIds() []string
-	Send(string, []byte) error
-	OnConnect(func(func(string), Connection))
-	OnMessage(func(string, []byte))
-}
-
-type PubSubHub interface {
-	ClientHub
-	Publish(string, []byte) error
-	Subscribe(string, string) error
-	Unsubscribe(string, string) error
-	CreateTopic(string) error
-	DeleteTopic(string) error
-	GetTopicIds() []string
-	GetClientIdsOfTopic(string) ([]string, error)
 }
 
 type hubOperationType int
@@ -80,22 +58,25 @@ type hubOperation struct {
 	Client   *Client
 	Topic    *Topic
 	Message  []byte
+	Code     int
 	Response chan error
 }
 
+// Implements core.AxiumHub
 type Hub struct {
-	listener   *quic.Listener
-	clients    map[string]*Client
-	topics     map[string]*Topic
-	operations chan hubOperation
-	ctx        context.Context
-	cancel     context.CancelFunc
-	clientMu   sync.RWMutex
-	topicMu    sync.RWMutex
-	onConnect  func(func(string), Connection)
-	onMessage  func(string, []byte)
-	closed     bool
-	closedMu   sync.RWMutex
+	listener     *quic.Listener
+	clients      map[string]*Client
+	topics       map[string]*Topic
+	operations   chan hubOperation
+	ctx          context.Context
+	cancel       context.CancelFunc
+	clientMu     sync.RWMutex
+	topicMu      sync.RWMutex
+	onConnect    func(func(string), core.AxiumConnection)
+	onDisconnect func(string)
+	onMessage    func(string, []byte)
+	closed       bool
+	closedMu     sync.RWMutex
 }
 
 func NewQuicHub(address string, tlsConf *tls.Config, config *quic.Config) (*Hub, error) {
@@ -105,8 +86,13 @@ func NewQuicHub(address string, tlsConf *tls.Config, config *quic.Config) (*Hub,
 		operations: make(chan hubOperation, 100),
 	}
 
-	h.onConnect = func(accept func(string), conn Connection) {
+	h.onConnect = func(accept func(string), conn core.AxiumConnection) {
+		fmt.Println("New client connected")
 		accept(uuid.New().String())
+	}
+
+	h.onDisconnect = func(id string) {
+		fmt.Printf("Client %s disconnected\n", id)
 	}
 
 	h.onMessage = func(id string, b []byte) {
@@ -144,7 +130,7 @@ func (h *Hub) acceptConnections() {
 		}
 
 		accept := func(id string) {
-			h.RegisterClient(id, conn)
+			h.registerClient(id, conn)
 		}
 		connWrapper := ConnectionWrapper{conn: conn}
 		go h.onConnect(accept, connWrapper)
@@ -179,7 +165,7 @@ func (h *Hub) handleOperation(op hubOperation) {
 		if client, ok := h.clients[op.ClientId]; ok {
 			delete(h.clients, op.ClientId)
 			close(client.send)
-			client.conn.CloseWithError(0, "client unregistered")
+			client.conn.CloseWithError(quic.ApplicationErrorCode(op.Code), string(op.Message))
 		}
 		h.clientMu.Unlock()
 
@@ -300,7 +286,7 @@ func (h *Hub) Close() error {
 	return h.listener.Close()
 }
 
-func (h *Hub) RegisterClient(clientId string, conn quic.Connection) error {
+func (h *Hub) registerClient(clientId string, conn quic.Connection) error {
 	if h.isClosed() {
 		return ErrHubClosed
 	}
@@ -317,7 +303,7 @@ func (h *Hub) RegisterClient(clientId string, conn quic.Connection) error {
 	return <-response
 }
 
-func (h *Hub) UnregisterClient(id string) error {
+func (h *Hub) CloseClient(id string, code int, reason string) error {
 	if h.isClosed() {
 		return ErrHubClosed
 	}
@@ -327,6 +313,8 @@ func (h *Hub) UnregisterClient(id string) error {
 	h.operations <- hubOperation{
 		Type:     OpUnregisterClient,
 		ClientId: id,
+		Code:     code,
+		Message:  []byte(reason),
 		Response: response,
 	}
 
@@ -467,8 +455,12 @@ func (h *Hub) GetClientIdsOfTopic(topicId string) ([]string, error) {
 	return topic.getClientIds(), nil
 }
 
-func (h *Hub) OnConnect(fn func(func(string), Connection)) {
+func (h *Hub) OnConnect(fn func(func(string), core.AxiumConnection)) {
 	h.onConnect = fn
+}
+
+func (h *Hub) OnDisconnect(fn func(string)) {
+	h.onDisconnect = fn
 }
 
 func (h *Hub) OnMessage(fn func(string, []byte)) {

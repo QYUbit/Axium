@@ -9,19 +9,20 @@ type RoomMessage struct {
 }
 
 type Room struct {
-	id           string
-	server       *Server
-	tickInterval int
-	onMessage    func(RoomMessage)
+	config    RoomConfig
+	id        string
+	server    *Server
+	onMessage func(RoomMessage)
 }
 
 type RoomConfig struct {
 }
 
-func (s *Server) CreateRoom(config *RoomConfig) (*Room, error) {
+func (s *Server) CreateRoom(config RoomConfig) (*Room, error) {
 	id := uuid.New().String()
 
 	r := &Room{
+		config: config,
 		id:     id,
 		server: s,
 	}

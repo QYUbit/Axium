@@ -1,46 +1,74 @@
 package core
 
 import (
-	quichub "axium/quic-hub"
 	"fmt"
 	"sync"
 )
 
+type AxiumConnection interface {
+	Close(int, string)
+	GetRemoteAddress() string
+}
+
+type AxiumHub interface {
+	CloseClient(string, int, string) error
+	GetClientIds() []string
+	Send(string, []byte) error
+	OnConnect(func(func(string), AxiumConnection))
+	OnDisconnect(func(string))
+	OnMessage(func(string, []byte))
+	Publish(string, []byte) error
+	Subscribe(string, string) error
+	Unsubscribe(string, string) error
+	CreateTopic(string) error
+	DeleteTopic(string) error
+	GetTopicIds() []string
+	GetClientIdsOfTopic(string) ([]string, error)
+}
+
+type AxiumSerializer interface {
+	EncodeMessage(Message) ([]byte, error)
+	DecodeMessage([]byte, *Message) error
+}
+
 type Server struct {
-	hub    quichub.PubSubHub
-	rooms  map[string]*Room
-	roomMu sync.RWMutex
+	hub        AxiumHub
+	serializer AxiumSerializer
+	rooms      map[string]*Room
+	roomMu     sync.RWMutex
 }
 
-type ServerConfig struct {
-	Host string
-	Port int
+type ServerOptions struct {
+	Hub        AxiumHub
+	Serializer AxiumSerializer
 }
 
-func NewServer(config *ServerConfig) (*Server, error) {
-	hub, err := quichub.NewQuicHub(fmt.Sprintf("%s:%d", config.Host, config.Port), nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
+func NewServer(options ServerOptions) (*Server, error) {
 	s := &Server{
-		hub:   hub,
 		rooms: make(map[string]*Room),
 	}
 
-	hub.OnConnect(s.handleConnect)
-	hub.OnMessage(s.handleMessage)
+	s.hub = options.Hub
+	s.serializer = options.Serializer
+
+	s.hub.OnConnect(s.handleConnect)
+	s.hub.OnDisconnect(s.handleDisconnect)
+	s.hub.OnMessage(s.handleMessage)
 
 	return s, nil
 }
 
-func (s *Server) handleConnect(accept func(string), conn quichub.Connection) {
+func (s *Server) handleConnect(accept func(string), conn AxiumConnection) {
+
+}
+
+func (s *Server) handleDisconnect(string) {
 
 }
 
 func (s *Server) handleMessage(clientId string, data []byte) {
 	var msg Message
-	if err := messageModel.Decode(data, &msg); err != nil {
+	if err := s.serializer.DecodeMessage(data, &msg); err != nil {
 		fmt.Printf("Failed to decode message: %s\n", err)
 		return
 	}

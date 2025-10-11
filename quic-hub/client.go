@@ -22,7 +22,8 @@ func NewClient(id string, conn quic.Connection) *Client {
 
 func (c *Client) ReadPump(hub *Hub) {
 	defer func() {
-		hub.UnregisterClient(c.id)
+		go hub.onDisconnect(c.id)
+		hub.CloseClient(c.id, 0, "client closed")
 	}()
 
 	for {
@@ -42,7 +43,7 @@ func (c *Client) ReadPump(hub *Hub) {
 		copy(message, buf[:n])
 		bufferPool.Put(buf)
 
-		hub.onMessage(c.id, message)
+		go hub.onMessage(c.id, message)
 	}
 }
 

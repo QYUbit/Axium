@@ -1,4 +1,4 @@
-module axium
+module github.com/QYUbit/Axium
 
 go 1.23
 
