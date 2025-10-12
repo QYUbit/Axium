@@ -7,26 +7,26 @@ import (
 	"time"
 )
 
-type Topic struct {
+type topic struct {
 	id          string
-	clients     map[string]*Client
-	subscribe   chan *Client
-	unsubscribe chan *Client
-	publish     chan []byte
+	clients     map[string]*client
+	subscribe   chan *client
+	unsubscribe chan *client
+	publish     chan message
 	mu          sync.RWMutex
 }
 
-func NewTopic(id string) *Topic {
-	return &Topic{
+func newTopic(id string) *topic {
+	return &topic{
 		id:          id,
-		clients:     make(map[string]*Client),
-		subscribe:   make(chan *Client, 10),
-		unsubscribe: make(chan *Client, 10),
-		publish:     make(chan []byte, 100),
+		clients:     make(map[string]*client),
+		subscribe:   make(chan *client, 10),
+		unsubscribe: make(chan *client, 10),
+		publish:     make(chan message, 100),
 	}
 }
 
-func (t *Topic) run(ctx context.Context) {
+func (t *topic) run(ctx context.Context) {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Printf("Topic %s panic: %v\n", t.id, err)
@@ -50,7 +50,7 @@ func (t *Topic) run(ctx context.Context) {
 
 		case message := <-t.publish:
 			t.mu.RLock()
-			clients := make([]*Client, 0, len(t.clients))
+			clients := make([]*client, 0, len(t.clients))
 			for _, client := range t.clients {
 				clients = append(clients, client)
 			}
@@ -67,7 +67,7 @@ func (t *Topic) run(ctx context.Context) {
 	}
 }
 
-func (t *Topic) getClientIds() []string {
+func (t *topic) getClientIds() []string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 

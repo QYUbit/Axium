@@ -1,39 +1,36 @@
 package core
 
-import "github.com/google/uuid"
+type EventType string
 
 type RoomMessage struct {
-	Event  uint32
+	Event  string
 	Origin string
 	Data   []byte
 }
 
-type Room struct {
-	config    RoomConfig
-	id        string
-	server    *Server
-	onMessage func(RoomMessage)
+type LifecycleHooks interface {
+	OnCreate()
+	OnJoin(func(Client) bool)
+	OnLeave(func(Client))
+	OnDestroy()
+	onCreate()
+	onJoin(Client) bool
+	onLeave(Client)
+	onDestroy()
 }
 
-type RoomConfig struct {
+type MessageHooks interface {
+	OnMessage(func(RoomMessage))
+	onMessage(RoomMessage)
 }
 
-func (s *Server) CreateRoom(config RoomConfig) (*Room, error) {
-	id := uuid.New().String()
-
-	r := &Room{
-		config: config,
-		id:     id,
-		server: s,
-	}
-
-	if err := s.hub.CreateTopic(id); err != nil {
-		return nil, err
-	}
-
-	return r, nil
+type Room interface {
+	LifecycleHooks
+	MessageHooks
 }
 
-func (r *Room) OnMessage(fn func(RoomMessage)) {
-	r.onMessage = fn
+type GameRoom interface {
+	Room
+	OnUpdate(func(float64))
+	onUpdate(float64)
 }

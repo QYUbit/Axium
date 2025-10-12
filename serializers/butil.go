@@ -12,7 +12,7 @@ type ButilSerializer struct {
 
 func NewButilSerializer() *ButilSerializer {
 	var roomEventModel, _ = butil.NewModel(
-		butil.Field(0, "event_type", butil.Uint32),
+		butil.Field(0, "event_type", butil.String),
 		butil.Field(1, "data", butil.Bytes),
 		butil.Field(2, "room_id", butil.String),
 	)

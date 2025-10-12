@@ -4,6 +4,7 @@ type MessageAction uint8
 
 const (
 	RoomEventAction MessageAction = iota
+	RoomRequest
 )
 
 type Message struct {
@@ -12,7 +13,7 @@ type Message struct {
 }
 
 type RoomEvent struct {
-	EventType uint32 `butil:"event_type"`
+	EventType string `butil:"event_type"`
 	Data      []byte `butil:"data"`
 	RoomId    string `butil:"room_id"`
 }

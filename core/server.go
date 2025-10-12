@@ -10,11 +10,11 @@ type AxiumConnection interface {
 	GetRemoteAddress() string
 }
 
-type AxiumHub interface {
+type AxiumTransport interface {
 	CloseClient(string, int, string) error
 	GetClientIds() []string
-	Send(string, []byte) error
-	OnConnect(func(func(string), AxiumConnection))
+	Send(string, []byte, bool) error
+	OnConnect(func(AxiumConnection, func(string), func(string)))
 	OnDisconnect(func(string))
 	OnMessage(func(string, []byte))
 	Publish(string, []byte) error
@@ -32,33 +32,34 @@ type AxiumSerializer interface {
 }
 
 type Server struct {
-	hub        AxiumHub
+	transport  AxiumTransport
 	serializer AxiumSerializer
-	rooms      map[string]*Room
+	rooms      map[string]Room
 	roomMu     sync.RWMutex
+	onConnect  func()
 }
 
 type ServerOptions struct {
-	Hub        AxiumHub
+	Transport  AxiumTransport
 	Serializer AxiumSerializer
 }
 
 func NewServer(options ServerOptions) (*Server, error) {
 	s := &Server{
-		rooms: make(map[string]*Room),
+		rooms: make(map[string]Room),
 	}
 
-	s.hub = options.Hub
+	s.transport = options.Transport
 	s.serializer = options.Serializer
 
-	s.hub.OnConnect(s.handleConnect)
-	s.hub.OnDisconnect(s.handleDisconnect)
-	s.hub.OnMessage(s.handleMessage)
+	s.transport.OnConnect(s.handleConnect)
+	s.transport.OnDisconnect(s.handleDisconnect)
+	s.transport.OnMessage(s.handleMessage)
 
 	return s, nil
 }
 
-func (s *Server) handleConnect(accept func(string), conn AxiumConnection) {
+func (s *Server) handleConnect(conn AxiumConnection, accept func(string), reject func(string)) {
 
 }
 
