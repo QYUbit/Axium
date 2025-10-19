@@ -1,19 +1,42 @@
 package core
 
-type MessageAction uint8
+type MessageAction string
 
 const (
-	RoomEventAction MessageAction = iota
-	RoomRequest
+	RoomEventAction   MessageAction = "room_event"
+	ReconnectAction   MessageAction = "reconnect"
+	AuthAction        MessageAction = "auth"
+	ServerEventAction MessageAction = "server_event"
 )
 
 type Message struct {
-	MessageAction uint8      `butil:"message_action"`
-	RoomEvent     *RoomEvent `butil:"room_event"`
+	MessageAction  string
+	RoomEventMsg   *RoomEventMsg
+	ReconnectMsg   *ReconnectMsg
+	ServerEventMsg *ServerEventMsg
 }
 
-type RoomEvent struct {
-	EventType string `butil:"event_type"`
-	Data      []byte `butil:"data"`
-	RoomId    string `butil:"room_id"`
+type RoomEventMsg struct {
+	EventType string
+	Data      []byte
+	RoomId    string
+}
+
+type ServerEventMsg struct {
+	EventType string
+	Data      []byte
+}
+
+type ReconnectMsg struct {
+	SessionId string
+}
+
+type AuthMethod string
+
+const (
+	GuestAuthMethod AuthMethod = "guest"
+)
+
+type AuthMsg struct {
+	Method AuthMethod
 }

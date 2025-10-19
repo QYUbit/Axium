@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -31,12 +32,23 @@ type AxiumSerializer interface {
 	DecodeMessage([]byte, *Message) error
 }
 
+type RoomDefinition func(*Room)
+
 type Server struct {
 	transport  AxiumTransport
 	serializer AxiumSerializer
-	rooms      map[string]Room
-	roomMu     sync.RWMutex
-	onConnect  func()
+
+	sessions  map[string]*Session
+	sessionMu sync.RWMutex
+	rooms     map[string]*Room
+	roomMu    sync.RWMutex
+
+	onConnect        func(ip string) (bool, string)
+	messageHandlers  map[string]MessageHandler
+	messageHandlerMu sync.RWMutex
+
+	roomDefinitions  map[string]RoomDefinition
+	roomDefinitionMu sync.RWMutex
 }
 
 type ServerOptions struct {
@@ -46,7 +58,7 @@ type ServerOptions struct {
 
 func NewServer(options ServerOptions) (*Server, error) {
 	s := &Server{
-		rooms: make(map[string]Room),
+		rooms: make(map[string]*Room),
 	}
 
 	s.transport = options.Transport
@@ -59,15 +71,36 @@ func NewServer(options ServerOptions) (*Server, error) {
 	return s, nil
 }
 
+// ==============================================
+// Transport handler
+// ==============================================
+
 func (s *Server) handleConnect(conn AxiumConnection, accept func(string), reject func(string)) {
+	ip := conn.GetRemoteAddress()
 
+	pass, str := s.onConnect(ip)
+	if pass {
+		ctx := context.Background()
+		session := NewSession(str, ip, ctx)
+
+		s.sessionMu.Lock()
+		s.sessions[str] = session
+		s.sessionMu.Unlock()
+
+		accept(str)
+	} else {
+		reject(str)
+	}
 }
 
-func (s *Server) handleDisconnect(string) {
-
+func (s *Server) handleDisconnect(id string) {
+	s.sessionMu.Lock()
+	s.sessions[id].handleDisconnect()
+	delete(s.sessions, id)
+	s.sessionMu.Unlock()
 }
 
-func (s *Server) handleMessage(clientId string, data []byte) {
+func (s *Server) handleMessage(sessionId string, data []byte) {
 	var msg Message
 	if err := s.serializer.DecodeMessage(data, &msg); err != nil {
 		fmt.Printf("Failed to decode message: %s\n", err)
@@ -77,18 +110,115 @@ func (s *Server) handleMessage(clientId string, data []byte) {
 	switch MessageAction(msg.MessageAction) {
 	case RoomEventAction:
 		s.roomMu.RLock()
-		room, exists := s.rooms[msg.RoomEvent.RoomId]
+		room, exists := s.rooms[msg.RoomEventMsg.RoomId]
 		s.roomMu.RUnlock()
 
 		if !exists {
-			fmt.Printf("room %s does not exist\n", msg.RoomEvent.RoomId)
+			fmt.Printf("room %s does not exist\n", msg.RoomEventMsg.RoomId)
 			return
 		}
 
-		room.onMessage(RoomMessage{
-			Event:  msg.RoomEvent.EventType,
-			Origin: clientId,
-			Data:   msg.RoomEvent.Data,
-		})
+		s.sessionMu.RLock()
+		session, exists := s.sessions[sessionId]
+		s.sessionMu.RUnlock()
+
+		if !exists {
+			fmt.Printf("session %s does not exist\n", sessionId)
+			return
+		}
+
+		room.messageHandlerMu.RLock()
+		handler, exists := room.messageHandlers[msg.RoomEventMsg.EventType]
+		room.messageHandlerMu.RUnlock()
+
+		if !exists {
+			fmt.Printf("handler for event type %s does not exist\n", msg.RoomEventMsg.EventType)
+			return
+		}
+
+		handler(session, msg.RoomEventMsg.Data) // Do the same for server events
+	case ServerEventAction:
+		s.sessionMu.RLock()
+		session, exists := s.sessions[sessionId]
+		s.sessionMu.RUnlock()
+
+		if !exists {
+			fmt.Printf("session %s does not exist\n", sessionId)
+			return
+		}
+
+		s.messageHandlerMu.RLock()
+		handler, exists := s.messageHandlers[msg.ServerEventMsg.EventType]
+		s.messageHandlerMu.RUnlock()
+
+		if !exists {
+			fmt.Printf("handler for event type %s does not exist\n", msg.ServerEventMsg.EventType)
+			return
+		}
+
+		handler(session, msg.ServerEventMsg.Data)
 	}
+}
+
+func (s *Server) CreateRoom(typ string, id string) error {
+	room := NewRoom(RoomConfig{
+		Id:        id,
+		Transport: s.transport,
+		Context:   context.Background(),
+	})
+
+	s.roomDefinitionMu.RLock()
+	definition, exists := s.roomDefinitions[typ]
+	s.roomDefinitionMu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("room of type %s not found", typ)
+	}
+
+	definition(room)
+
+	if err := s.transport.CreateTopic(id); err != nil {
+		return err
+	}
+
+	s.roomMu.Lock()
+	s.rooms[id] = room
+	s.roomMu.Unlock()
+	return nil
+}
+
+func (s *Server) DestroyRoom(roomId string) error {
+	s.roomMu.RLock()
+	room, exists := s.rooms[roomId]
+	s.roomMu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("room %s does not exist\n", roomId)
+	}
+
+	s.roomMu.Lock()
+	delete(s.rooms, roomId)
+	s.roomMu.Unlock()
+
+	return room.destroy()
+}
+
+func (s *Server) RegisterHandler(eventType string, handler MessageHandler) {
+	s.messageHandlerMu.Lock()
+	s.messageHandlers[eventType] = handler
+	s.messageHandlerMu.Unlock()
+}
+
+func (s *Server) OnConnect(fn func(string) (bool, string)) {
+	s.onConnect = fn
+}
+
+func (s *Server) DefineRoom(typ string, room RoomDefinition) {
+	s.roomDefinitionMu.Lock()
+	s.roomDefinitions[typ] = room
+	s.roomDefinitionMu.Unlock()
+}
+
+func (s *Server) OnShutdown(fn func()) {
+
 }

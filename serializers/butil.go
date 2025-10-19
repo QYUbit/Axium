@@ -7,7 +7,7 @@ import (
 
 // Implements core.AxiumSerializer
 type ButilSerializer struct {
-	messageModel, roomModel *butil.Model
+	messageModel, roomModel, reconnectModel *butil.Model
 }
 
 func NewButilSerializer() *ButilSerializer {
@@ -17,14 +17,20 @@ func NewButilSerializer() *ButilSerializer {
 		butil.Field(2, "room_id", butil.String),
 	)
 
+	var reconnectModel, _ = butil.NewModel(
+		butil.Field(0, "session_id", butil.String),
+	)
+
 	var messageModel, _ = butil.NewModel(
-		butil.Field(0, "message_action", butil.Uint8),
-		butil.OptionalField(1, "room_event", butil.Reference(roomEventModel)),
+		butil.Field(0, "message_action", butil.String),
+		butil.OptionalField(1, "room_event_msg", butil.Reference(roomEventModel)),
+		butil.OptionalField(2, "reconnect_msg", butil.Reference(reconnectModel)),
 	)
 
 	return &ButilSerializer{
-		messageModel: messageModel,
-		roomModel:    roomEventModel,
+		messageModel:   messageModel,
+		roomModel:      roomEventModel,
+		reconnectModel: reconnectModel,
 	}
 }
 
