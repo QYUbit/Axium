@@ -18,8 +18,6 @@ type RoomConfig struct {
 	Context      context.Context
 }
 
-type MessageHandler func(origin *Session, data []byte)
-
 type Room struct {
 	id           string
 	tickInterval time.Duration

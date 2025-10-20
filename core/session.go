@@ -4,6 +4,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 )
 
@@ -107,9 +108,7 @@ func (s *Session) GetAll() map[string]any {
 	s.storeMu.RLock()
 	defer s.storeMu.RUnlock()
 	storeCopy := make(map[string]any, len(s.store))
-	for k, v := range s.store {
-		storeCopy[k] = v
-	}
+	maps.Copy(storeCopy, s.store)
 	return storeCopy
 }
 
@@ -192,7 +191,6 @@ func (s *Session) handleDisconnect() {
 	copy(rooms, s.rooms)
 	s.roomsMu.Unlock()
 
-	// Session aus allen Rooms entfernen
 	for _, room := range rooms {
 		if err := room.Unassign(s); err != nil {
 			fmt.Printf("Error unassigning session %s from room %s: %s\n", s.id, room.id, err)
