@@ -38,6 +38,21 @@ type MessageHandler func(origin *Session, data []byte)
 
 type RoomDefinition func(*Room)
 
+type AxiumServer interface {
+	ISessionManager
+	IRoomManager
+	OnConnect(func(*Session, string) (bool, string))
+	OnDisconnect(func(*Session))
+	OnShutdown(func())
+	RegisterHandler(string, MessageHandler)
+	UnregisterHandler(string)
+	CreateRoom(roomType string, id string) error
+	Broadcast(data []byte, reliable bool) error
+	BroadcastEvent(eventType string, data []byte, reliable bool) error
+	Shutdown() error
+	Context() context.Context
+}
+
 type Server struct {
 	*SessionManager
 	*RoomManager
@@ -62,7 +77,7 @@ type ServerOptions struct {
 	IdGenerator IdGenerator
 }
 
-func NewServer(options ServerOptions) (*Server, error) {
+func NewServer(options ServerOptions) AxiumServer {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sm := &SessionManager{
@@ -91,7 +106,39 @@ func NewServer(options ServerOptions) (*Server, error) {
 	s.transport.OnDisconnect(s.handleDisconnect)
 	s.transport.OnMessage(s.handleMessage)
 
-	return s, nil
+	return s
+}
+
+type extendedServerOptions struct {
+	Transport      AxiumTransport
+	Serializer     AxiumSerializer
+	SessionManager *SessionManager
+	RoomManager    *RoomManager
+	IdGenerator    IdGenerator
+	Context        context.Context
+}
+
+func newServer(options extendedServerOptions) *Server {
+	ctx, cancel := context.WithCancel(options.Context)
+
+	s := &Server{
+		SessionManager:  options.SessionManager,
+		RoomManager:     options.RoomManager,
+		messageHandlers: make(map[string]MessageHandler),
+		transport:       options.Transport,
+		serializer:      options.Serializer,
+		ctx:             ctx,
+		cancel:          cancel,
+		onConnect:       func(_ *Session, _ string) (bool, string) { return true, "" },
+		onDisconnect:    func(s *Session) {},
+		onShutdown:      func() {},
+	}
+
+	s.transport.OnConnect(s.handleConnect)
+	s.transport.OnDisconnect(s.handleDisconnect)
+	s.transport.OnMessage(s.handleMessage)
+
+	return s
 }
 
 // ==============================================
@@ -194,6 +241,10 @@ func (s *Server) handleMessage(sessionId string, data []byte) {
 // Event handlers
 // ==============================================
 
+func (s *Server) RegisterMiddleware() {
+
+}
+
 func (s *Server) RegisterHandler(eventType string, handler MessageHandler) {
 	s.messageHandlerMu.Lock()
 	s.messageHandlers[eventType] = handler
@@ -216,6 +267,39 @@ func (s *Server) OnDisconnect(fn func(*Session)) {
 
 func (s *Server) OnShutdown(fn func()) {
 	s.onShutdown = fn
+}
+
+// ==============================================
+// Create room
+// ==============================================
+
+func (s *Server) CreateRoom(typ string, id string) error {
+	room := NewRoom(RoomConfig{
+		Id:         id,
+		Transport:  s.transport,
+		Serializer: s.serializer, // ?
+		Context:    s.ctx,
+	})
+
+	s.roomDefinitionMu.RLock()
+	definition, exists := s.roomDefinitions[typ]
+	s.roomDefinitionMu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("room of type %s not found", typ)
+	}
+
+	definition(room)
+
+	if err := s.transport.CreateTopic(id); err != nil {
+		return err
+	}
+
+	s.setRooom(id, room)
+
+	room.OnCreate()
+
+	return nil
 }
 
 // ==============================================
@@ -279,180 +363,4 @@ func (s *Server) Shutdown() error {
 
 func (s *Server) Context() context.Context {
 	return s.ctx
-}
-
-// ==============================================
-// Session Manager
-// ==============================================
-
-type SessionManager struct {
-	sessions  map[string]*Session
-	sessionMu sync.RWMutex
-}
-
-func (sm *SessionManager) getSession(id string) (*Session, error) {
-	sm.sessionMu.RLock()
-	session, exists := sm.sessions[id]
-	sm.sessionMu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("session %s does not exist\n", id)
-	}
-	return session, nil
-}
-
-func (sm *SessionManager) setSession(id string, session *Session) {
-	sm.sessionMu.Lock()
-	sm.sessions[id] = session
-	sm.sessionMu.Unlock()
-}
-
-func (sm *SessionManager) GetSession(sessionId string) (*Session, bool) {
-	sm.sessionMu.RLock()
-	defer sm.sessionMu.RUnlock()
-	session, exists := sm.sessions[sessionId]
-	return session, exists
-}
-
-func (sm *SessionManager) GetSessions() []*Session {
-	sm.sessionMu.RLock()
-	defer sm.sessionMu.RUnlock()
-	sessions := make([]*Session, 0, len(sm.sessions))
-	for _, session := range sm.sessions {
-		sessions = append(sessions, session)
-	}
-	return sessions
-}
-
-func (sm *SessionManager) GetSessionIds() []string {
-	sm.sessionMu.RLock()
-	defer sm.sessionMu.RUnlock()
-	ids := make([]string, 0, len(sm.sessions))
-	for id := range sm.sessions {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-func (sm *SessionManager) SessionCount() int {
-	sm.sessionMu.RLock()
-	defer sm.sessionMu.RUnlock()
-	return len(sm.sessions)
-}
-
-func (sm *SessionManager) DisconnectSession(sessionId string, code int, reason string) error {
-	sm.sessionMu.RLock()
-	session, exists := sm.sessions[sessionId]
-	sm.sessionMu.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("session %s does not exist", sessionId)
-	}
-
-	return session.Close(code, reason)
-}
-
-// ==============================================
-// Room Manager
-// ==============================================
-
-type RoomManager struct {
-	rooms            map[string]*Room
-	roomMu           sync.RWMutex
-	roomDefinitions  map[string]RoomDefinition
-	roomDefinitionMu sync.RWMutex
-}
-
-func (s *Server) CreateRoom(typ string, id string) error {
-	room := NewRoom(RoomConfig{
-		Id:         id,
-		Transport:  s.transport,
-		Serializer: s.serializer, // ?
-		Context:    s.ctx,
-	})
-
-	s.roomDefinitionMu.RLock()
-	definition, exists := s.roomDefinitions[typ]
-	s.roomDefinitionMu.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("room of type %s not found", typ)
-	}
-
-	definition(room)
-
-	if err := s.transport.CreateTopic(id); err != nil {
-		return err
-	}
-
-	s.setRooom(id, room)
-
-	room.OnCreate()
-
-	return nil
-}
-
-func (rm *RoomManager) DestroyRoom(roomId string) error {
-	rm.roomMu.Lock()
-	room, exists := rm.rooms[roomId]
-	if exists {
-		delete(rm.rooms, roomId)
-	}
-	rm.roomMu.Unlock()
-
-	if !exists {
-		return fmt.Errorf("room %s does not exist", roomId)
-	}
-
-	return room.destroy()
-}
-
-func (rm *RoomManager) getRoom(id string) (*Room, error) {
-	rm.roomMu.RLock()
-	room, exists := rm.rooms[id]
-	rm.roomMu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("room %s does not exist\n", id)
-	}
-	return room, nil
-}
-
-func (rm *RoomManager) setRooom(id string, room *Room) {
-	rm.roomMu.Lock()
-	rm.rooms[id] = room
-	rm.roomMu.Unlock()
-}
-
-func (rm *RoomManager) GetRoom(roomId string) (*Room, bool) {
-	rm.roomMu.RLock()
-	defer rm.roomMu.RUnlock()
-	room, exists := rm.rooms[roomId]
-	return room, exists
-}
-
-func (rm *RoomManager) GetRooms() []*Room {
-	rm.roomMu.RLock()
-	defer rm.roomMu.RUnlock()
-	rooms := make([]*Room, 0, len(rm.rooms))
-	for _, room := range rm.rooms {
-		rooms = append(rooms, room)
-	}
-	return rooms
-}
-
-func (rm *RoomManager) GetRoomIds() []string {
-	rm.roomMu.RLock()
-	defer rm.roomMu.RUnlock()
-	ids := make([]string, 0, len(rm.rooms))
-	for id := range rm.rooms {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-func (rm *RoomManager) DefineRoom(typ string, room RoomDefinition) {
-	rm.roomDefinitionMu.Lock()
-	rm.roomDefinitions[typ] = room
-	rm.roomDefinitionMu.Unlock()
 }

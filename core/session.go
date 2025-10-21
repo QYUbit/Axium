@@ -8,6 +8,28 @@ import (
 	"sync"
 )
 
+type ISession interface {
+	Id() string
+	Context() context.Context
+	Rooms() []*Room
+	RoomCount() int
+	IsInRoom(roomId string) bool
+	GetRoom(roomId string) (*Room, bool)
+	Get(key string) (any, bool)
+	Set(key string, value any)
+	Delete(key string)
+	GetAll() map[string]any
+	Has(key string) bool
+	Clear()
+	Send(data []byte, reliable bool) error
+	SendEvent(evenType string, data []byte, reliable bool, serializer AxiumSerializer) error // ?
+	Close(code int, reason string) error
+	JoinRoom(room *Room) error
+	LeaveRoom(room *Room) error
+	LeaveRoomById(roomId string) error
+	LeaveAllRooms() error
+}
+
 type Session struct {
 	id        string
 	ip        string
