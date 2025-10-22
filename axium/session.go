@@ -1,5 +1,5 @@
 // session.go
-package core
+package axium
 
 import (
 	"context"

@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/QYUbit/Axium/core"
+	"github.com/QYUbit/Axium/axium"
 	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
 )
@@ -26,7 +26,7 @@ var bufferPool = &sync.Pool{
 	},
 }
 
-// Implements core.AxiumConnection
+// Implements axium.AxiumConnection
 type connectionWrapper struct {
 	conn quic.Connection
 }
@@ -69,7 +69,7 @@ type hubOperation struct {
 	Response chan error
 }
 
-// Implements core.AxiumTransport
+// Implements axium.AxiumTransport
 type QuicTransport struct {
 	listener     *quic.Listener
 	clients      map[string]*client
@@ -79,7 +79,7 @@ type QuicTransport struct {
 	cancel       context.CancelFunc
 	clientMu     sync.RWMutex
 	topicMu      sync.RWMutex
-	onConnect    func(core.AxiumConnection, func(string), func(string))
+	onConnect    func(axium.AxiumConnection, func(string), func(string))
 	onDisconnect func(string)
 	onMessage    func(string, []byte)
 	closed       atomic.Bool
@@ -92,7 +92,7 @@ func NewQuicTransport(address string, tlsConf *tls.Config, config *quic.Config) 
 		operations: make(chan hubOperation, 100),
 	}
 
-	t.onConnect = func(_ core.AxiumConnection, accept func(string), reject func(string)) {
+	t.onConnect = func(_ axium.AxiumConnection, accept func(string), reject func(string)) {
 		fmt.Println("New client connected")
 		accept(uuid.New().String())
 	}
@@ -464,7 +464,7 @@ func (t *QuicTransport) GetClientIdsOfTopic(topicId string) ([]string, error) {
 	return topic.getClientIds(), nil
 }
 
-func (t *QuicTransport) OnConnect(fn func(core.AxiumConnection, func(string), func(string))) {
+func (t *QuicTransport) OnConnect(fn func(axium.AxiumConnection, func(string), func(string))) {
 	t.onConnect = fn
 }
 

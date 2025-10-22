@@ -1,4 +1,4 @@
-package core
+package axium
 
 import (
 	"fmt"
@@ -7,10 +7,10 @@ import (
 
 type ISessionManager interface {
 	GetSession(sessionId string) (*Session, bool)
-	Query(key string, value any) []*Session
-	QueryOne(key string, value any) (*Session, bool)
-	QueryFunc(fn func(store map[string]any) bool) []*Session
-	QueryOneFunc(fn func(store map[string]any) bool) (*Session, bool)
+	QuerySession(key string, value any) []*Session
+	QueryOneSession(key string, value any) (*Session, bool)
+	QuerySessionFunc(fn func(store map[string]any) bool) []*Session
+	QueryOneSessionFunc(fn func(store map[string]any) bool) (*Session, bool)
 	GetSessions() []*Session
 	GetSessionIds() []string
 	SessionCount() int
@@ -46,7 +46,7 @@ func (sm *SessionManager) GetSession(sessionId string) (*Session, bool) {
 	return session, exists
 }
 
-func (sm *SessionManager) Query(key string, value any) []*Session {
+func (sm *SessionManager) QuerySession(key string, value any) []*Session {
 	sessions := sm.GetSessions()
 	var filtered []*Session
 	for _, s := range sessions {
@@ -58,7 +58,7 @@ func (sm *SessionManager) Query(key string, value any) []*Session {
 	return filtered
 }
 
-func (sm *SessionManager) QueryOne(key string, value any) (*Session, bool) {
+func (sm *SessionManager) QueryOneSession(key string, value any) (*Session, bool) {
 	sessions := sm.GetSessions()
 	for _, s := range sessions {
 		val, exists := s.Get(key)
@@ -69,7 +69,7 @@ func (sm *SessionManager) QueryOne(key string, value any) (*Session, bool) {
 	return nil, false
 }
 
-func (sm *SessionManager) QueryFunc(fn func(map[string]any) bool) []*Session {
+func (sm *SessionManager) QuerySessionFunc(fn func(map[string]any) bool) []*Session {
 	sessions := sm.GetSessions()
 	var filtered []*Session
 	for _, s := range sessions {
@@ -81,7 +81,7 @@ func (sm *SessionManager) QueryFunc(fn func(map[string]any) bool) []*Session {
 	return filtered
 }
 
-func (sm *SessionManager) QueryOneFunc(fn func(map[string]any) bool) (*Session, bool) {
+func (sm *SessionManager) QueryOneSessionFunc(fn func(map[string]any) bool) (*Session, bool) {
 	sessions := sm.GetSessions()
 	for _, s := range sessions {
 		store := s.GetAll()
