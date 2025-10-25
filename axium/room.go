@@ -1,10 +1,8 @@
-// room.go
 package axium
 
 import (
 	"context"
 	"fmt"
-	"maps"
 	"sync"
 	"time"
 )
@@ -32,14 +30,11 @@ type Room struct {
 	messageHandlerMu sync.RWMutex
 	fallback         MessageHandler
 
-	state   map[string]any
-	stateMu sync.RWMutex
-
-	OnCreate  func()
-	OnJoin    func(session *Session)
-	OnLeave   func(session *Session)
-	OnDestroy func()
-	OnTick    func(dt time.Duration)
+	onCreate  func()
+	onJoin    func(session *Session)
+	onLeave   func(session *Session)
+	onDestroy func()
+	onTick    func(dt time.Duration)
 }
 
 func NewRoom(config RoomConfig) *Room {
@@ -52,15 +47,15 @@ func NewRoom(config RoomConfig) *Room {
 		transport:       config.Transport,
 		serializer:      config.Serializer,
 		messageHandlers: make(map[string]MessageHandler),
-		state:           make(map[string]any),
-		ctx:             ctx,
-		cancel:          cancel,
+		//state:           make(map[string]any),
+		ctx:    ctx,
+		cancel: cancel,
 
-		OnCreate:  func() {},
-		OnJoin:    func(session *Session) {},
-		OnLeave:   func(session *Session) {},
-		OnDestroy: func() {},
-		OnTick:    func(dt time.Duration) {},
+		onCreate:  func() {},
+		onJoin:    func(session *Session) {},
+		onLeave:   func(session *Session) {},
+		onDestroy: func() {},
+		onTick:    func(dt time.Duration) {},
 		fallback:  func(origin *Session, data []byte) {},
 	}
 
@@ -114,37 +109,6 @@ func (r *Room) Context() context.Context {
 }
 
 // ==============================================
-// State management
-// ==============================================
-
-func (r *Room) GetState(key string) (value any, exists bool) {
-	r.stateMu.RLock()
-	defer r.stateMu.RUnlock()
-	value, exists = r.state[key]
-	return
-}
-
-func (r *Room) SetState(key string, value any) {
-	r.stateMu.Lock()
-	defer r.stateMu.Unlock()
-	r.state[key] = value
-}
-
-func (r *Room) DeleteState(key string) {
-	r.stateMu.Lock()
-	defer r.stateMu.Unlock()
-	delete(r.state, key)
-}
-
-func (r *Room) GetAllState() map[string]any {
-	r.stateMu.RLock()
-	defer r.stateMu.RUnlock()
-	stateCopy := make(map[string]any, len(r.state))
-	maps.Copy(stateCopy, r.state)
-	return stateCopy
-}
-
-// ==============================================
 // Member management
 // ==============================================
 
@@ -162,7 +126,7 @@ func (r *Room) Assign(session *Session) error {
 
 	session.joinRoom(r)
 
-	r.OnJoin(session)
+	r.onJoin(session)
 	return nil
 }
 
@@ -184,12 +148,12 @@ func (r *Room) Unassign(session *Session) error {
 
 	session.leaveRoom(r)
 
-	r.OnLeave(session)
+	r.onLeave(session)
 	return nil
 }
 
 func (r *Room) destroy() error {
-	r.OnDestroy()
+	r.onDestroy()
 	r.cancel()
 
 	r.memberMu.RLock()
@@ -272,6 +236,30 @@ func (r *Room) BroadcastEventExcept(sessionId string, eventType string, data []b
 }
 
 // ==============================================
+// Hooks
+// ==============================================
+
+func (r *Room) OnCreate(fn func()) {
+	r.onCreate = fn
+}
+
+func (r *Room) OnJoin(fn func(s *Session)) {
+	r.onJoin = fn
+}
+
+func (r *Room) OnLeave(fn func(s *Session)) {
+	r.onLeave = fn
+}
+
+func (r *Room) OnDestroy(fn func()) {
+	r.onDestroy = fn
+}
+
+func (r *Room) OnTick(fn func(dt time.Duration)) {
+	r.onTick = fn
+}
+
+// ==============================================
 // Message handlers
 // ==============================================
 
@@ -308,7 +296,7 @@ func (r *Room) run() {
 		case t := <-ticker.C:
 			dt := t.Sub(lastTick)
 			lastTick = t
-			go r.OnTick(dt)
+			go r.onTick(dt)
 		}
 	}
 }

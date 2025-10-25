@@ -297,7 +297,7 @@ func (s *Server) CreateRoom(typ string, id string) error {
 
 	s.setRooom(id, room)
 
-	room.OnCreate()
+	room.onCreate()
 
 	return nil
 }
