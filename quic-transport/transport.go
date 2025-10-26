@@ -14,11 +14,23 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-var (
-	ErrClientNotFound  = errors.New("client not found")
-	ErrTopicNotFound   = errors.New("topic not found")
-	ErrTransportClosed = errors.New("transport is closed")
-)
+type ErrClientNotFound struct {
+	ClientId string
+}
+
+func (e ErrClientNotFound) Error() string {
+	return fmt.Sprintf("client %s not found", e.ClientId)
+}
+
+type ErrTopicNotFound struct {
+	TopicId string
+}
+
+func (e ErrTopicNotFound) Error() string {
+	return fmt.Sprintf("topic %s not found", e.TopicId)
+}
+
+var ErrTransportClosed = errors.New("transport is closed")
 
 var bufferPool = &sync.Pool{
 	New: func() any {
@@ -82,6 +94,7 @@ type QuicTransport struct {
 	onConnect    func(axium.AxiumConnection, func(string), func(string))
 	onDisconnect func(string)
 	onMessage    func(string, []byte)
+	onError      func(error)
 	closed       atomic.Bool
 }
 
@@ -103,6 +116,10 @@ func NewQuicTransport(address string, tlsConf *tls.Config, config *quic.Config) 
 
 	t.onMessage = func(id string, b []byte) {
 		fmt.Printf("Received message by client %s: %s\n", id, b)
+	}
+
+	t.onError = func(err error) {
+		fmt.Printf("An unhandled error occured")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -130,7 +147,7 @@ func (t *QuicTransport) acceptConnections() {
 			case <-t.ctx.Done():
 				return
 			default:
-				fmt.Printf("failed accepting connection: %s\n", err)
+				t.onError(fmt.Errorf("failed accepting connection: %s\n", err))
 				continue
 			}
 		}
@@ -188,7 +205,7 @@ func (t *QuicTransport) handleOperation(op hubOperation) {
 		t.clientMu.RUnlock()
 
 		if !exists {
-			err = ErrClientNotFound
+			err = ErrClientNotFound{op.ClientId}
 		} else {
 			select {
 			case client.send <- message{Content: op.Message, Reliable: op.Reliable}:
@@ -202,7 +219,7 @@ func (t *QuicTransport) handleOperation(op hubOperation) {
 		t.topicMu.Lock()
 		t.topics[op.Topic.id] = op.Topic
 		t.topicMu.Unlock()
-		go op.Topic.run(t.ctx)
+		go op.Topic.run(t)
 
 	case opDeleteTopic:
 		t.topicMu.Lock()
@@ -220,14 +237,14 @@ func (t *QuicTransport) handleOperation(op hubOperation) {
 		t.topicMu.RUnlock()
 
 		if !topicExists {
-			err = ErrTopicNotFound
+			err = ErrTopicNotFound{op.TopicId}
 		} else {
 			t.clientMu.RLock()
 			client, clientExists := t.clients[op.ClientId]
 			t.clientMu.RUnlock()
 
 			if !clientExists {
-				err = ErrClientNotFound
+				err = ErrClientNotFound{op.ClientId}
 			} else {
 				select {
 				case topic.subscribe <- client:
@@ -244,14 +261,14 @@ func (t *QuicTransport) handleOperation(op hubOperation) {
 		t.topicMu.RUnlock()
 
 		if !topicExists {
-			err = ErrTopicNotFound
+			err = ErrTopicNotFound{op.TopicId}
 		} else {
 			t.clientMu.RLock()
 			client, clientExists := t.clients[op.ClientId]
 			t.clientMu.RUnlock()
 
 			if !clientExists {
-				err = ErrClientNotFound
+				err = ErrClientNotFound{op.ClientId}
 			} else {
 				select {
 				case topic.unsubscribe <- client:
@@ -268,7 +285,7 @@ func (t *QuicTransport) handleOperation(op hubOperation) {
 		t.topicMu.RUnlock()
 
 		if !exists {
-			err = ErrTopicNotFound
+			err = ErrTopicNotFound{op.TopicId}
 		} else {
 			select {
 			case topic.publish <- message{Content: op.Message, Reliable: op.Reliable}:
@@ -459,7 +476,7 @@ func (t *QuicTransport) GetClientIdsOfTopic(topicId string) ([]string, error) {
 
 	topic, exists := t.topics[topicId]
 	if !exists {
-		return nil, ErrTopicNotFound
+		return nil, ErrTopicNotFound{topicId}
 	}
 	return topic.getClientIds(), nil
 }
@@ -474,4 +491,8 @@ func (t *QuicTransport) OnDisconnect(fn func(string)) {
 
 func (t *QuicTransport) OnMessage(fn func(string, []byte)) {
 	t.onMessage = fn
+}
+
+func (t *QuicTransport) OnError(fn func(error)) {
+	t.onError = fn
 }

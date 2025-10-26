@@ -1,7 +1,6 @@
 package quichub
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -26,16 +25,16 @@ func newTopic(id string) *topic {
 	}
 }
 
-func (t *topic) run(ctx context.Context) {
+func (t *topic) run(transport *QuicTransport) {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Printf("Topic %s panic: %v\n", t.id, err)
+			transport.onError(fmt.Errorf("Topic %s panic: %v\n", t.id, err))
 		}
 	}()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-transport.ctx.Done():
 			return
 
 		case client := <-t.subscribe:
@@ -60,7 +59,7 @@ func (t *topic) run(ctx context.Context) {
 				select {
 				case client.send <- message:
 				case <-time.After(100 * time.Millisecond):
-					fmt.Printf("Timeout sending to client %s in topic %s\n", client.id, t.id)
+					transport.onError(fmt.Errorf("Timeout sending to client %s in topic %s\n", client.id, t.id))
 				}
 			}
 		}

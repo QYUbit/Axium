@@ -6,46 +6,15 @@ import (
 	"sync"
 )
 
-type AxiumConnection interface {
-	Close(int, string)
-	GetRemoteAddress() string
-}
-
-type AxiumTransport interface {
-	CloseClient(string, int, string) error
-	GetClientIds() []string
-	Send(string, []byte, bool) error
-	OnConnect(func(AxiumConnection, func(string), func(string)))
-	OnDisconnect(func(string))
-	OnMessage(func(string, []byte))
-	Publish(string, []byte) error
-	Subscribe(string, string) error
-	Unsubscribe(string, string) error
-	CreateTopic(string) error
-	DeleteTopic(string) error
-	GetTopicIds() []string
-	GetClientIdsOfTopic(string) ([]string, error)
-}
-
-type AxiumSerializer interface {
-	EncodeMessage(Message) ([]byte, error)
-	DecodeMessage([]byte, *Message) error
-}
-
-type IdGenerator func() string
-
-type MessageHandler func(origin *Session, data []byte)
-
-type RoomDefinition func(*Room)
-
 type AxiumServer interface {
 	ISessionManager
 	IRoomManager
 	OnConnect(func(*Session, string) (bool, string))
 	OnDisconnect(func(*Session))
 	OnShutdown(func())
-	RegisterHandler(string, MessageHandler)
-	UnregisterHandler(string)
+	OnBeforeMessage(func(session *Session, data []byte) bool)
+	MiddlewareHandler(MessageHandler)
+	MessageHandler(string, MessageHandler)
 	CreateRoom(roomType string, id string) error
 	Broadcast(data []byte, reliable bool) error
 	BroadcastEvent(eventType string, data []byte, reliable bool) error
@@ -61,11 +30,14 @@ type Server struct {
 	serializer  AxiumSerializer
 	idGenerator IdGenerator
 
-	onConnect        func(*Session, string) (bool, string)
-	onDisconnect     func(*Session)
-	onShutdown       func()
-	messageHandlers  map[string]MessageHandler
-	messageHandlerMu sync.RWMutex
+	onConnect         func(*Session, string) (bool, string)
+	onDisconnect      func(*Session)
+	onShutdown        func()
+	onBeforeMessage   MiddlewareHandler
+	middlewareMandler MessageHandler
+	messageHandlers   map[string]MessageHandler
+	messageHandlerMu  sync.RWMutex
+	fallbackHandler   MessageHandler
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -90,53 +62,25 @@ func NewServer(options ServerOptions) AxiumServer {
 	}
 
 	s := &Server{
-		SessionManager:  sm,
-		RoomManager:     rm,
-		messageHandlers: make(map[string]MessageHandler),
-		transport:       options.Transport,
-		serializer:      options.Serializer,
-		ctx:             ctx,
-		cancel:          cancel,
-		onConnect:       func(_ *Session, _ string) (bool, string) { return true, "" },
-		onDisconnect:    func(s *Session) {},
-		onShutdown:      func() {},
+		SessionManager:    sm,
+		RoomManager:       rm,
+		transport:         options.Transport,
+		serializer:        options.Serializer,
+		ctx:               ctx,
+		cancel:            cancel,
+		onConnect:         func(_ *Session, _ string) (bool, string) { return true, "" },
+		onDisconnect:      func(s *Session) {},
+		onShutdown:        func() {},
+		onBeforeMessage:   func(session *Session, data []byte) bool { return true },
+		middlewareMandler: func(session *Session, data []byte) {},
+		messageHandlers:   make(map[string]MessageHandler),
+		fallbackHandler:   func(session *Session, data []byte) {},
 	}
 
 	s.transport.OnConnect(s.handleConnect)
 	s.transport.OnDisconnect(s.handleDisconnect)
 	s.transport.OnMessage(s.handleMessage)
-
-	return s
-}
-
-type extendedServerOptions struct {
-	Transport      AxiumTransport
-	Serializer     AxiumSerializer
-	SessionManager *SessionManager
-	RoomManager    *RoomManager
-	IdGenerator    IdGenerator
-	Context        context.Context
-}
-
-func newServer(options extendedServerOptions) *Server {
-	ctx, cancel := context.WithCancel(options.Context)
-
-	s := &Server{
-		SessionManager:  options.SessionManager,
-		RoomManager:     options.RoomManager,
-		messageHandlers: make(map[string]MessageHandler),
-		transport:       options.Transport,
-		serializer:      options.Serializer,
-		ctx:             ctx,
-		cancel:          cancel,
-		onConnect:       func(_ *Session, _ string) (bool, string) { return true, "" },
-		onDisconnect:    func(s *Session) {},
-		onShutdown:      func() {},
-	}
-
-	s.transport.OnConnect(s.handleConnect)
-	s.transport.OnDisconnect(s.handleDisconnect)
-	s.transport.OnMessage(s.handleMessage)
+	s.transport.OnError(s.handleError)
 
 	return s
 }
@@ -175,7 +119,19 @@ func (s *Server) handleDisconnect(id string) {
 	}
 }
 
+// TODO Custom action hooks
+
 func (s *Server) handleMessage(sessionId string, data []byte) {
+	session, err := s.getSession(sessionId)
+	if err != nil {
+		fmt.Printf("%v\n", err)
+		return
+	}
+
+	if !s.onBeforeMessage(session, data) {
+		return
+	}
+
 	var msg Message
 	if err := s.serializer.DecodeMessage(data, &msg); err != nil {
 		fmt.Printf("Failed to decode message: %s\n", err)
@@ -190,12 +146,6 @@ func (s *Server) handleMessage(sessionId string, data []byte) {
 		}
 
 		room, err := s.getRoom(msg.RoomEventMsg.RoomId)
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			return
-		}
-
-		session, err := s.getSession(sessionId)
 		if err != nil {
 			fmt.Printf("%v\n", err)
 			return
@@ -218,18 +168,12 @@ func (s *Server) handleMessage(sessionId string, data []byte) {
 			return
 		}
 
-		session, err := s.getSession(sessionId)
-		if err != nil {
-			fmt.Printf("%v\n", err)
-			return
-		}
-
 		s.messageHandlerMu.RLock()
 		handler, exists := s.messageHandlers[msg.ServerEventMsg.EventType]
 		s.messageHandlerMu.RUnlock()
 
 		if !exists {
-			fmt.Printf("handler for event type %s does not exist\n", msg.ServerEventMsg.EventType)
+			s.fallbackHandler(session, msg.ServerEventMsg.Data)
 			return
 		}
 
@@ -237,24 +181,30 @@ func (s *Server) handleMessage(sessionId string, data []byte) {
 	}
 }
 
+func (s *Server) handleError(err error) {
+	fmt.Println(err)
+}
+
 // ==============================================
 // Event handlers
 // ==============================================
 
-func (s *Server) RegisterMiddleware() {
+func (s *Server) MiddlewareHandler(handler MessageHandler) {
 
 }
 
-func (s *Server) RegisterHandler(eventType string, handler MessageHandler) {
+func (s *Server) MessageHandler(eventType string, handler MessageHandler) {
 	s.messageHandlerMu.Lock()
 	s.messageHandlers[eventType] = handler
 	s.messageHandlerMu.Unlock()
 }
 
-func (s *Server) UnregisterHandler(eventType string) {
-	s.messageHandlerMu.Lock()
-	delete(s.messageHandlers, eventType)
-	s.messageHandlerMu.Unlock()
+func (s *Server) FallbackHandler(handler MessageHandler) {
+	s.fallbackHandler = handler
+}
+
+func (s *Server) OnBeforeMessage(fn func(session *Session, data []byte) bool) {
+	s.onBeforeMessage = fn
 }
 
 func (s *Server) OnConnect(fn func(session *Session, ip string) (pass bool, rejectReason string)) {

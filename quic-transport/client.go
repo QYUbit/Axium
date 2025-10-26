@@ -69,7 +69,7 @@ func (c *client) datagramPump(t *QuicTransport) {
 func (c *client) writePump(t *QuicTransport) {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Printf("WritePump panic for client %s: %v\n", c.id, err)
+			t.onError(fmt.Errorf("WritePump panic for client %s: %v\n", c.id, err))
 		}
 	}()
 
@@ -85,20 +85,20 @@ func (c *client) writePump(t *QuicTransport) {
 
 			if !message.Reliable {
 				if err := c.conn.SendDatagram(message.Content); err != nil {
-					fmt.Printf("Error sending datagram to client %s: %v\n", c.id, err)
+					t.onError(fmt.Errorf("Failed sending datagram to client %s: %v\n", c.id, err))
 				}
 				return
 			}
 
 			stream, err := c.conn.OpenStreamSync(t.ctx)
 			if err != nil {
-				fmt.Printf("Error opening stream for client %s: %v\n", c.id, err)
+				t.onError(fmt.Errorf("Failed opening stream for client %s: %v\n", c.id, err))
 				return
 			}
 
 			_, err = stream.Write(message.Content)
 			if err != nil {
-				fmt.Printf("Error writing to stream for client %s: %v\n", c.id, err)
+				t.onError(fmt.Errorf("Failed writing to stream for client %s: %v\n", c.id, err))
 				return
 			}
 

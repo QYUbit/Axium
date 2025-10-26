@@ -1,4 +1,3 @@
-// session.go
 package axium
 
 import (

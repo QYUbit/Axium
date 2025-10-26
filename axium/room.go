@@ -7,13 +7,24 @@ import (
 	"time"
 )
 
-type RoomConfig struct {
-	Id           string
-	Transport    AxiumTransport
-	Serializer   AxiumSerializer
-	UseTicker    bool
-	TickInterval time.Duration
-	Context      context.Context
+type IRoom interface {
+	Id() string
+	Context() context.Context
+	MemberCount() int
+	Members() []*Session
+	GetMember(sessionId string) (*Session, bool)
+	HasMember(sessionId string) bool
+	Assign(session *Session) error
+	Unassign(session *Session) error
+	Broadcast(data []byte, reliable bool) error
+	BroadcastExcept(data []byte, reliable bool, exceptions ...string) error
+	OnCreate(func())
+	OnJoin(func(s *Session))
+	OnLeave(func(s *Session))
+	OnDestroy(func())
+	OnTick(func(dt time.Duration))
+	MessageHandler(event string, handler MessageHandler)
+	FallbackHandler(handler MessageHandler)
 }
 
 type Room struct {
@@ -26,6 +37,7 @@ type Room struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 
+	// TODO Middleware
 	messageHandlers  map[string]MessageHandler
 	messageHandlerMu sync.RWMutex
 	fallback         MessageHandler
@@ -35,6 +47,15 @@ type Room struct {
 	onLeave   func(session *Session)
 	onDestroy func()
 	onTick    func(dt time.Duration)
+}
+
+type RoomConfig struct {
+	Id           string
+	Transport    AxiumTransport
+	Serializer   AxiumSerializer
+	UseTicker    bool
+	TickInterval time.Duration
+	Context      context.Context
 }
 
 func NewRoom(config RoomConfig) *Room {
@@ -56,7 +77,7 @@ func NewRoom(config RoomConfig) *Room {
 		onLeave:   func(session *Session) {},
 		onDestroy: func() {},
 		onTick:    func(dt time.Duration) {},
-		fallback:  func(origin *Session, data []byte) {},
+		fallback:  func(session *Session, data []byte) {},
 	}
 
 	if config.UseTicker && config.TickInterval > 0 {
@@ -198,11 +219,17 @@ func (r *Room) BroadcastEvent(eventType string, data []byte, reliable bool) erro
 	return r.Broadcast(encoded, reliable)
 }
 
-func (r *Room) BroadcastExcept(sessionId string, data []byte, reliable bool) error {
+func (r *Room) BroadcastExcept(data []byte, reliable bool, exceptions ...string) error {
 	r.memberMu.RLock()
 	members := make([]*Session, 0, len(r.members))
+
+	excluded := make(map[string]struct{}, len(exceptions))
+	for _, id := range exceptions {
+		excluded[id] = struct{}{}
+	}
+
 	for id, session := range r.members {
-		if id != sessionId {
+		if _, skip := excluded[id]; !skip {
 			members = append(members, session)
 		}
 	}
@@ -214,10 +241,11 @@ func (r *Room) BroadcastExcept(sessionId string, data []byte, reliable bool) err
 			lastErr = err
 		}
 	}
+
 	return lastErr
 }
 
-func (r *Room) BroadcastEventExcept(sessionId string, eventType string, data []byte, reliable bool) error {
+func (r *Room) BroadcastEventExcept(eventType string, data []byte, reliable bool, except ...string) error {
 	msg := Message{
 		MessageAction: string(RoomEventAction),
 		RoomEventMsg: &RoomEventMsg{
@@ -232,7 +260,7 @@ func (r *Room) BroadcastEventExcept(sessionId string, eventType string, data []b
 		return err
 	}
 
-	return r.BroadcastExcept(sessionId, encoded, reliable)
+	return r.BroadcastExcept(encoded, reliable, except...)
 }
 
 // ==============================================
@@ -263,15 +291,9 @@ func (r *Room) OnTick(fn func(dt time.Duration)) {
 // Message handlers
 // ==============================================
 
-func (r *Room) RegisterHandler(event string, handler MessageHandler) {
+func (r *Room) MessageHandler(event string, handler MessageHandler) {
 	r.messageHandlerMu.Lock()
 	r.messageHandlers[event] = handler
-	r.messageHandlerMu.Unlock()
-}
-
-func (r *Room) UnregisterHandler(event string) {
-	r.messageHandlerMu.Lock()
-	delete(r.messageHandlers, event)
 	r.messageHandlerMu.Unlock()
 }
 
@@ -300,6 +322,8 @@ func (r *Room) run() {
 		}
 	}
 }
+
+// TODO StopTicker, StartTicker
 
 func (r *Room) SetTickInterval(interval time.Duration) {
 	r.tickInterval = interval
