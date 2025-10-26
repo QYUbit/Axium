@@ -21,7 +21,6 @@ type ISession interface {
 	Has(key string) bool
 	Clear()
 	Send(data []byte, reliable bool) error
-	SendEvent(evenType string, data []byte, reliable bool, serializer AxiumSerializer) error // ?
 	Close(code int, reason string) error
 	JoinRoom(room *Room) error
 	LeaveRoom(room *Room) error
@@ -152,23 +151,6 @@ func (s *Session) Clear() {
 
 func (s *Session) Send(data []byte, reliable bool) error {
 	return s.transport.Send(s.id, data, reliable)
-}
-
-func (s *Session) SendEvent(eventType string, data []byte, reliable bool, serializer AxiumSerializer) error {
-	msg := Message{
-		MessageAction: string(ServerEventAction),
-		ServerEventMsg: &ServerEventMsg{
-			EventType: eventType,
-			Data:      data,
-		},
-	}
-
-	encoded, err := serializer.EncodeMessage(msg)
-	if err != nil {
-		return err
-	}
-
-	return s.Send(encoded, reliable)
 }
 
 func (s *Session) Close(code int, reason string) error {

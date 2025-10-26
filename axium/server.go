@@ -17,7 +17,7 @@ type AxiumServer interface {
 	MessageHandler(string, MessageHandler)
 	CreateRoom(roomType string, id string) error
 	Broadcast(data []byte, reliable bool) error
-	BroadcastEvent(eventType string, data []byte, reliable bool) error
+	BroadcastExcept(data []byte, reliable bool, exceptions ...string) error
 	Shutdown() error
 	Context() context.Context
 }
@@ -120,6 +120,7 @@ func (s *Server) handleDisconnect(id string) {
 }
 
 // TODO Custom action hooks
+// TODO Server error handling
 
 func (s *Server) handleMessage(sessionId string, data []byte) {
 	session, err := s.getSession(sessionId)
@@ -132,52 +133,42 @@ func (s *Server) handleMessage(sessionId string, data []byte) {
 		return
 	}
 
-	var msg Message
-	if err := s.serializer.DecodeMessage(data, &msg); err != nil {
+	msg, err := s.serializer.DecodeMessage(data)
+	if err != nil {
 		fmt.Printf("Failed to decode message: %s\n", err)
 		return
 	}
 
-	switch MessageAction(msg.MessageAction) {
+	switch msg.Action {
 	case RoomEventAction:
-		if msg.RoomEventMsg == nil {
-			fmt.Printf("RoomEventMsg is nil\n")
-			return
-		}
-
-		room, err := s.getRoom(msg.RoomEventMsg.RoomId)
+		room, err := s.getRoom(msg.RoomId)
 		if err != nil {
 			fmt.Printf("%v\n", err)
 			return
 		}
 
 		room.messageHandlerMu.RLock()
-		handler, exists := room.messageHandlers[msg.RoomEventMsg.EventType]
+		handler, exists := room.messageHandlers[msg.Event]
 		room.messageHandlerMu.RUnlock()
 
 		if !exists {
-			room.fallback(session, msg.RoomEventMsg.Data)
+			room.fallback(session, msg.Data)
 			return
 		}
 
-		handler(session, msg.RoomEventMsg.Data)
+		handler(session, msg.Data)
 
 	case ServerEventAction:
-		if msg.ServerEventMsg == nil {
-			fmt.Printf("ServerEventMsg is nil\n")
-			return
-		}
-
 		s.messageHandlerMu.RLock()
-		handler, exists := s.messageHandlers[msg.ServerEventMsg.EventType]
+		handler, exists := s.messageHandlers[msg.Event]
 		s.messageHandlerMu.RUnlock()
 
 		if !exists {
-			s.fallbackHandler(session, msg.ServerEventMsg.Data)
+			s.fallbackHandler(session, msg.Data)
 			return
 		}
 
-		handler(session, msg.ServerEventMsg.Data)
+		handler(session, msg.Data)
 	}
 }
 
@@ -268,21 +259,30 @@ func (s *Server) Broadcast(data []byte, reliable bool) error {
 	return lastErr
 }
 
-func (s *Server) BroadcastEvent(eventType string, data []byte, reliable bool) error {
-	msg := Message{
-		MessageAction: string(ServerEventAction),
-		ServerEventMsg: &ServerEventMsg{
-			EventType: eventType,
-			Data:      data,
-		},
+func (s *Server) BroadcastExcept(data []byte, reliable bool, exceptions ...string) error {
+	s.sessionMu.RLock()
+	sendTo := make([]*Session, 0, len(s.sessions))
+
+	excluded := make(map[string]struct{}, len(exceptions))
+	for _, id := range exceptions {
+		excluded[id] = struct{}{}
 	}
 
-	encoded, err := s.serializer.EncodeMessage(msg)
-	if err != nil {
-		return err
+	for id, session := range s.sessions {
+		if _, skip := excluded[id]; !skip {
+			sendTo = append(sendTo, session)
+		}
+	}
+	s.sessionMu.RUnlock()
+
+	var lastErr error
+	for _, session := range sendTo {
+		if err := session.Send(data, reliable); err != nil {
+			lastErr = err
+		}
 	}
 
-	return s.Broadcast(encoded, reliable)
+	return lastErr
 }
 
 // ==============================================

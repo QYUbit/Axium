@@ -201,24 +201,6 @@ func (r *Room) Broadcast(data []byte, reliable bool) error {
 	return r.transport.Publish(r.id, data)
 }
 
-func (r *Room) BroadcastEvent(eventType string, data []byte, reliable bool) error {
-	msg := Message{
-		MessageAction: string(RoomEventAction),
-		RoomEventMsg: &RoomEventMsg{
-			EventType: eventType,
-			Data:      data,
-			RoomId:    r.id,
-		},
-	}
-
-	encoded, err := r.serializer.EncodeMessage(msg)
-	if err != nil {
-		return err
-	}
-
-	return r.Broadcast(encoded, reliable)
-}
-
 func (r *Room) BroadcastExcept(data []byte, reliable bool, exceptions ...string) error {
 	r.memberMu.RLock()
 	members := make([]*Session, 0, len(r.members))
@@ -243,24 +225,6 @@ func (r *Room) BroadcastExcept(data []byte, reliable bool, exceptions ...string)
 	}
 
 	return lastErr
-}
-
-func (r *Room) BroadcastEventExcept(eventType string, data []byte, reliable bool, except ...string) error {
-	msg := Message{
-		MessageAction: string(RoomEventAction),
-		RoomEventMsg: &RoomEventMsg{
-			EventType: eventType,
-			Data:      data,
-			RoomId:    r.id,
-		},
-	}
-
-	encoded, err := r.serializer.EncodeMessage(msg)
-	if err != nil {
-		return err
-	}
-
-	return r.BroadcastExcept(encoded, reliable, except...)
 }
 
 // ==============================================
