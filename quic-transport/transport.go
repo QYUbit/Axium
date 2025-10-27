@@ -119,7 +119,7 @@ func NewQuicTransport(address string, tlsConf *tls.Config, config *quic.Config) 
 	}
 
 	t.onError = func(err error) {
-		fmt.Printf("An unhandled error occured")
+		fmt.Printf("An unhandled error occurred")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

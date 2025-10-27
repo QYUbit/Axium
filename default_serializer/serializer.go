@@ -38,9 +38,9 @@ func (s *Serializer) encode(w Writer, msg *axium.Message) error {
 	}
 
 	switch msg.Action {
-	case 0:
+	case axium.ServerEventAction:
 		return s.encodeServerEvent(w, msg)
-	case 1:
+	case axium.RoomEventAction:
 		return s.encodeRoomEvent(w, msg)
 	}
 
@@ -81,6 +81,24 @@ func (s *Serializer) decode(r Reader) (*axium.Message, error) {
 		return s.decodeServerEvent(r)
 	case axium.RoomEventAction:
 		return s.decodeRoomEvent(r)
+	case axium.ReservedAction0:
+	case axium.ReservedAction3:
+	case axium.ReservedAction4:
+	case axium.ReservedAction5:
+	case axium.ReservedAction6:
+	case axium.ReservedAction7:
+	case axium.ReservedAction8:
+	case axium.ReservedAction9:
+	default:
+		data := make([]byte, 0, r.Remaining())
+		_, err := r.Read(data)
+
+		msg := &axium.Message{
+			Action: axium.MessageAction(action),
+			Data:   data,
+		}
+
+		return msg, err
 	}
 
 	return nil, fmt.Errorf("unexpected action %d", action)

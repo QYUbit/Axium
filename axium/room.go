@@ -23,6 +23,7 @@ type IRoom interface {
 	OnLeave(func(s *Session))
 	OnDestroy(func())
 	OnTick(func(dt time.Duration))
+	MiddlewareHandler(handler MiddlewareHandler)
 	MessageHandler(event string, handler MessageHandler)
 	FallbackHandler(handler MessageHandler)
 }
@@ -37,10 +38,10 @@ type Room struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 
-	// TODO Middleware
-	messageHandlers  map[string]MessageHandler
-	messageHandlerMu sync.RWMutex
-	fallback         MessageHandler
+	middlewareHandler MiddlewareHandler
+	messageHandlers   map[string]MessageHandler
+	messageHandlerMu  sync.RWMutex
+	fallback          MessageHandler
 
 	onCreate  func()
 	onJoin    func(session *Session)
@@ -62,22 +63,23 @@ func NewRoom(config RoomConfig) *Room {
 	ctx, cancel := context.WithCancel(config.Context)
 
 	r := &Room{
-		id:              config.Id,
-		tickInterval:    config.TickInterval,
-		members:         make(map[string]*Session),
-		transport:       config.Transport,
-		serializer:      config.Serializer,
-		messageHandlers: make(map[string]MessageHandler),
-		//state:           make(map[string]any),
-		ctx:    ctx,
-		cancel: cancel,
+		id:           config.Id,
+		tickInterval: config.TickInterval,
+		members:      make(map[string]*Session),
+		transport:    config.Transport,
+		serializer:   config.Serializer,
+		ctx:          ctx,
+		cancel:       cancel,
+
+		middlewareHandler: func(session *Session, data []byte) bool { return true },
+		messageHandlers:   make(map[string]MessageHandler),
+		fallback:          func(session *Session, data []byte) {},
 
 		onCreate:  func() {},
 		onJoin:    func(session *Session) {},
 		onLeave:   func(session *Session) {},
 		onDestroy: func() {},
 		onTick:    func(dt time.Duration) {},
-		fallback:  func(session *Session, data []byte) {},
 	}
 
 	if config.UseTicker && config.TickInterval > 0 {
@@ -186,6 +188,7 @@ func (r *Room) destroy() error {
 
 	for _, session := range members {
 		if err := r.Unassign(session); err != nil {
+			// propergate error
 			fmt.Printf("Error unassigning session %s from room %s: %s\n", session.id, r.id, err)
 		}
 	}
@@ -255,6 +258,10 @@ func (r *Room) OnTick(fn func(dt time.Duration)) {
 // Message handlers
 // ==============================================
 
+func (r *Room) MiddlewareHandler(handler MiddlewareHandler) {
+	r.middlewareHandler = handler
+}
+
 func (r *Room) MessageHandler(event string, handler MessageHandler) {
 	r.messageHandlerMu.Lock()
 	r.messageHandlers[event] = handler
@@ -268,6 +275,8 @@ func (r *Room) FallbackHandler(handler MessageHandler) {
 // ==============================================
 // Ticker
 // ==============================================
+
+// TODO Maybe remove tickers from room
 
 func (r *Room) run() {
 	ticker := time.NewTicker(r.tickInterval)

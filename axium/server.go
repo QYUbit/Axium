@@ -3,6 +3,7 @@ package axium
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -12,8 +13,9 @@ type AxiumServer interface {
 	OnConnect(func(*Session, string) (bool, string))
 	OnDisconnect(func(*Session))
 	OnShutdown(func())
-	OnBeforeMessage(func(session *Session, data []byte) bool)
-	MiddlewareHandler(MessageHandler)
+	OnBeforeMessage(MiddlewareHandler)
+	ActionHandler(byte, MessageHandler)
+	MiddlewareHandler(MiddlewareHandler)
 	MessageHandler(string, MessageHandler)
 	CreateRoom(roomType string, id string) error
 	Broadcast(data []byte, reliable bool) error
@@ -33,8 +35,11 @@ type Server struct {
 	onConnect         func(*Session, string) (bool, string)
 	onDisconnect      func(*Session)
 	onShutdown        func()
+	onError           func(error)
 	onBeforeMessage   MiddlewareHandler
-	middlewareMandler MessageHandler
+	actionHandlers    map[byte]MessageHandler
+	actionHandlerMu   sync.RWMutex
+	middlewareHandler MiddlewareHandler
 	messageHandlers   map[string]MessageHandler
 	messageHandlerMu  sync.RWMutex
 	fallbackHandler   MessageHandler
@@ -71,8 +76,10 @@ func NewServer(options ServerOptions) AxiumServer {
 		onConnect:         func(_ *Session, _ string) (bool, string) { return true, "" },
 		onDisconnect:      func(s *Session) {},
 		onShutdown:        func() {},
+		onError:           func(err error) { log.Printf("An error occurred: %v", err) },
+		actionHandlers:    make(map[byte]MessageHandler),
 		onBeforeMessage:   func(session *Session, data []byte) bool { return true },
-		middlewareMandler: func(session *Session, data []byte) {},
+		middlewareHandler: func(session *Session, data []byte) bool { return true },
 		messageHandlers:   make(map[string]MessageHandler),
 		fallbackHandler:   func(session *Session, data []byte) {},
 	}
@@ -80,10 +87,12 @@ func NewServer(options ServerOptions) AxiumServer {
 	s.transport.OnConnect(s.handleConnect)
 	s.transport.OnDisconnect(s.handleDisconnect)
 	s.transport.OnMessage(s.handleMessage)
-	s.transport.OnError(s.handleError)
+	s.transport.OnError(s.onError)
 
 	return s
 }
+
+// TODO More idiomatic design (e.g. context)
 
 // ==============================================
 // Transport handler
@@ -119,13 +128,12 @@ func (s *Server) handleDisconnect(id string) {
 	}
 }
 
-// TODO Custom action hooks
-// TODO Server error handling
+// TODO Better server error handling
 
 func (s *Server) handleMessage(sessionId string, data []byte) {
 	session, err := s.getSession(sessionId)
 	if err != nil {
-		fmt.Printf("%v\n", err)
+		s.onError(err)
 		return
 	}
 
@@ -135,15 +143,35 @@ func (s *Server) handleMessage(sessionId string, data []byte) {
 
 	msg, err := s.serializer.DecodeMessage(data)
 	if err != nil {
-		fmt.Printf("Failed to decode message: %s\n", err)
+		s.onError(fmt.Errorf("Failed to decode message: %v", err))
 		return
 	}
 
 	switch msg.Action {
+	case ServerEventAction:
+		if !s.middlewareHandler(session, msg.Data) {
+			return
+		}
+
+		s.messageHandlerMu.RLock()
+		handler, exists := s.messageHandlers[msg.Event]
+		s.messageHandlerMu.RUnlock()
+
+		if !exists {
+			s.fallbackHandler(session, msg.Data)
+			return
+		}
+
+		handler(session, msg.Data)
+
 	case RoomEventAction:
 		room, err := s.getRoom(msg.RoomId)
 		if err != nil {
-			fmt.Printf("%v\n", err)
+			s.onError(err)
+			return
+		}
+
+		if !room.middlewareHandler(session, msg.Data) {
 			return
 		}
 
@@ -158,30 +186,35 @@ func (s *Server) handleMessage(sessionId string, data []byte) {
 
 		handler(session, msg.Data)
 
-	case ServerEventAction:
-		s.messageHandlerMu.RLock()
-		handler, exists := s.messageHandlers[msg.Event]
-		s.messageHandlerMu.RUnlock()
-
-		if !exists {
-			s.fallbackHandler(session, msg.Data)
-			return
-		}
+	default:
+		s.actionHandlerMu.RLock()
+		handler := s.actionHandlers[byte(msg.Action)]
+		s.actionHandlerMu.RUnlock()
 
 		handler(session, msg.Data)
 	}
-}
-
-func (s *Server) handleError(err error) {
-	fmt.Println(err)
 }
 
 // ==============================================
 // Event handlers
 // ==============================================
 
-func (s *Server) MiddlewareHandler(handler MessageHandler) {
+func (s *Server) OnBeforeMessage(handler MiddlewareHandler) {
+	s.onBeforeMessage = handler
+}
 
+func (s *Server) ActionHandler(action byte, handler MessageHandler) {
+	if action < 10 {
+		panic("actions 0 to 9 are reserved")
+	}
+
+	s.actionHandlerMu.Lock()
+	s.actionHandlers[action] = handler
+	s.actionHandlerMu.Unlock()
+}
+
+func (s *Server) MiddlewareHandler(handler MiddlewareHandler) {
+	s.middlewareHandler = handler
 }
 
 func (s *Server) MessageHandler(eventType string, handler MessageHandler) {
@@ -194,10 +227,6 @@ func (s *Server) FallbackHandler(handler MessageHandler) {
 	s.fallbackHandler = handler
 }
 
-func (s *Server) OnBeforeMessage(fn func(session *Session, data []byte) bool) {
-	s.onBeforeMessage = fn
-}
-
 func (s *Server) OnConnect(fn func(session *Session, ip string) (pass bool, rejectReason string)) {
 	s.onConnect = fn
 }
@@ -208,6 +237,10 @@ func (s *Server) OnDisconnect(fn func(*Session)) {
 
 func (s *Server) OnShutdown(fn func()) {
 	s.onShutdown = fn
+}
+
+func (s *Server) OnError(fn func(error)) {
+	s.onError = fn
 }
 
 // ==============================================
@@ -290,25 +323,31 @@ func (s *Server) BroadcastExcept(data []byte, reliable bool, exceptions ...strin
 // ==============================================
 
 func (s *Server) Shutdown() error {
+	var lastErr error
+
 	s.cancel()
 
 	s.onShutdown()
 
+	if err := s.transport.Close(); err != nil {
+		lastErr = err
+	}
+
 	roomIds := s.GetRoomIds()
 	for _, roomId := range roomIds {
 		if err := s.DestroyRoom(roomId); err != nil {
-			fmt.Printf("Error destroying room %s: %s\n", roomId, err)
+			lastErr = err
 		}
 	}
 
 	sessionIds := s.GetSessionIds()
 	for _, sessionId := range sessionIds {
 		if err := s.DisconnectSession(sessionId, 1001, "Server shutdown"); err != nil { // code ?
-			fmt.Printf("Error disconnecting session %s: %s\n", sessionId, err)
+			lastErr = err
 		}
 	}
 
-	return nil
+	return lastErr
 }
 
 func (s *Server) Context() context.Context {

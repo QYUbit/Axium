@@ -156,6 +156,8 @@ func (s *Session) Send(data []byte, reliable bool) error {
 func (s *Session) Close(code int, reason string) error {
 	s.cancel()
 	s.handleDisconnect()
+	// ! will trigger handleDisconnect twice
+	// ! transport.CloseClient -> onDisconnect -> server.handleDisconnect -> room.handleDisconnect
 	return s.transport.CloseClient(s.id, code, reason)
 }
 
@@ -196,6 +198,7 @@ func (s *Session) handleDisconnect() {
 
 	for _, room := range rooms {
 		if err := room.Unassign(s); err != nil {
+			// propergate error
 			fmt.Printf("Error unassigning session %s from room %s: %s\n", s.id, room.id, err)
 		}
 	}

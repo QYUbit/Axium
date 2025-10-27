@@ -20,6 +20,7 @@ type AxiumTransport interface {
 	DeleteTopic(string) error
 	GetTopicIds() []string
 	GetClientIdsOfTopic(string) ([]string, error)
+	Close() error
 }
 
 type AxiumSerializer interface {
@@ -29,7 +30,7 @@ type AxiumSerializer interface {
 
 type IdGenerator func() string
 
-type MessageHandler func(session *Session, data []byte) // TODO rename message handlers to event handler
+type MessageHandler func(session *Session, data []byte)
 type MiddlewareHandler func(session *Session, data []byte) bool
 
 type RoomDefinition func(*Room)
