@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 )
 
 type IRoom interface {
@@ -22,21 +21,19 @@ type IRoom interface {
 	OnJoin(func(s *Session))
 	OnLeave(func(s *Session))
 	OnDestroy(func())
-	OnTick(func(dt time.Duration))
 	MiddlewareHandler(handler MiddlewareHandler)
 	MessageHandler(event string, handler MessageHandler)
 	FallbackHandler(handler MessageHandler)
 }
 
 type Room struct {
-	id           string
-	tickInterval time.Duration
-	members      map[string]*Session
-	memberMu     sync.RWMutex
-	transport    AxiumTransport
-	serializer   AxiumSerializer
-	ctx          context.Context
-	cancel       context.CancelFunc
+	id         string
+	members    map[string]*Session
+	memberMu   sync.RWMutex
+	transport  AxiumTransport
+	serializer AxiumSerializer
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	middlewareHandler MiddlewareHandler
 	messageHandlers   map[string]MessageHandler
@@ -47,29 +44,26 @@ type Room struct {
 	onJoin    func(session *Session)
 	onLeave   func(session *Session)
 	onDestroy func()
-	onTick    func(dt time.Duration)
 }
 
 type RoomConfig struct {
-	Id           string
-	Transport    AxiumTransport
-	Serializer   AxiumSerializer
-	UseTicker    bool
-	TickInterval time.Duration
-	Context      context.Context
+	Id         string
+	Transport  AxiumTransport
+	Serializer AxiumSerializer
+	UseTicker  bool
+	Context    context.Context
 }
 
 func NewRoom(config RoomConfig) *Room {
 	ctx, cancel := context.WithCancel(config.Context)
 
 	r := &Room{
-		id:           config.Id,
-		tickInterval: config.TickInterval,
-		members:      make(map[string]*Session),
-		transport:    config.Transport,
-		serializer:   config.Serializer,
-		ctx:          ctx,
-		cancel:       cancel,
+		id:         config.Id,
+		members:    make(map[string]*Session),
+		transport:  config.Transport,
+		serializer: config.Serializer,
+		ctx:        ctx,
+		cancel:     cancel,
 
 		middlewareHandler: func(session *Session, data []byte) bool { return true },
 		messageHandlers:   make(map[string]MessageHandler),
@@ -79,11 +73,6 @@ func NewRoom(config RoomConfig) *Room {
 		onJoin:    func(session *Session) {},
 		onLeave:   func(session *Session) {},
 		onDestroy: func() {},
-		onTick:    func(dt time.Duration) {},
-	}
-
-	if config.UseTicker && config.TickInterval > 0 {
-		go r.run()
 	}
 
 	return r
@@ -250,10 +239,6 @@ func (r *Room) OnDestroy(fn func()) {
 	r.onDestroy = fn
 }
 
-func (r *Room) OnTick(fn func(dt time.Duration)) {
-	r.onTick = fn
-}
-
 // ==============================================
 // Message handlers
 // ==============================================
@@ -270,38 +255,4 @@ func (r *Room) MessageHandler(event string, handler MessageHandler) {
 
 func (r *Room) FallbackHandler(handler MessageHandler) {
 	r.fallback = handler
-}
-
-// ==============================================
-// Ticker
-// ==============================================
-
-// TODO Maybe remove tickers from room
-
-func (r *Room) run() {
-	ticker := time.NewTicker(r.tickInterval)
-	defer ticker.Stop()
-
-	lastTick := time.Now()
-
-	for {
-		select {
-		case <-r.ctx.Done():
-			return
-		case t := <-ticker.C:
-			dt := t.Sub(lastTick)
-			lastTick = t
-			go r.onTick(dt)
-		}
-	}
-}
-
-// TODO StopTicker, StartTicker
-
-func (r *Room) SetTickInterval(interval time.Duration) {
-	r.tickInterval = interval
-}
-
-func (r *Room) GetTickInterval() time.Duration {
-	return r.tickInterval
 }
