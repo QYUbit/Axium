@@ -1,17 +1,22 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/QYUbit/Axium/axium"
 	serializer "github.com/QYUbit/Axium/default_serializer"
 	quic "github.com/QYUbit/Axium/quic-transport"
+	"github.com/google/uuid"
 )
 
+func generator() string {
+	return uuid.New().String()
+}
+
 func main() {
-	transport, err := quic.NewQuicTransport("localhost:8080", nil, nil)
+	transport, err := quic.NewQuicTransport("localhost:8080", &tls.Config{InsecureSkipVerify: true}, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -19,8 +24,9 @@ func main() {
 	serializer := serializer.NewSerializer()
 
 	server := axium.NewServer(axium.ServerOptions{
-		Transport:  transport,
-		Serializer: serializer,
+		Transport:   transport,
+		Serializer:  serializer,
+		IdGenerator: generator,
 	})
 
 	server.OnConnect(func(session *axium.Session, ip string) (bool, string) {
@@ -32,10 +38,7 @@ func main() {
 	})
 
 	server.OnBeforeMessage(func(session *axium.Session, data []byte) bool {
-		if len(data) > 4096 {
-			return false
-		}
-		return true
+		return len(data) <= 4096
 	})
 
 	server.MessageHandler("auth", func(session *axium.Session, data []byte) {
@@ -86,10 +89,6 @@ func main() {
 
 		r.OnDestroy(func() {
 			fmt.Println("room destroyed")
-		})
-
-		r.OnTick(func(dt time.Duration) {
-			fmt.Println("tick")
 		})
 
 		r.MiddlewareHandler(func(session *axium.Session, data []byte) (pass bool) {
