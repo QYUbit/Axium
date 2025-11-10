@@ -12,6 +12,9 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+type RoomLogicStuff struct {
+}
+
 func TestClient(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
