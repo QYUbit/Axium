@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -41,20 +42,29 @@ type hubOperation struct {
 	Response chan error
 }
 
-type message struct {
+type outgoingMessage struct {
 	Content  []byte
 	Reliable bool
 }
 
+type Message struct {
+	ClientId string
+	Data     []byte
+}
+
+type ConnectionRequest struct {
+	RemoteAddr string
+}
+
 type Transport interface {
-	Send(to string, data []byte, relable bool) error
-	Broadcast(to []string, data []byte, reliable bool) error
-	CloseClient(client string, code int, reason string) error
-	OnConnect(func(remoteAddr string, accept func(id string), reject func(reason string)))
-	OnDisconnect(func(client string))
-	OnMessage(func(from string, data []byte))
-	OnError(func(err error))
-	GetClients() []string
-	Start() error
+	Start(ctx context.Context) error
 	Close() error
+	Send(clientId string, data []byte, reliable bool) error
+	Broadcast(clientId []string, data []byte, reliable bool) error
+	CloseClient(clientId string, code int, reason string) error
+	GetClients() (clientIds []string)
+	Messages() <-chan Message
+	Connections() <-chan ConnectionRequest
+	Disconnections() <-chan string
+	Errors() <-chan error
 }

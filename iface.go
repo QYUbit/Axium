@@ -51,3 +51,8 @@ type TransportManagement interface {
 	Broadcast(data []byte) error
 	BroadcastExcept(data []byte, exceptions ...string) error
 }
+
+type StateEngine interface {
+	GetSnapshot()
+	GetDelta()
+}

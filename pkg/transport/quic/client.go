@@ -1,9 +1,11 @@
 package quic
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -18,7 +20,7 @@ var bufferPool = &sync.Pool{
 type client struct {
 	id     string
 	conn   quic.Connection
-	send   chan message
+	send   chan outgoingMessage
 	closed atomic.Bool
 }
 
@@ -26,28 +28,34 @@ func newClient(id string, conn quic.Connection) *client {
 	return &client{
 		id:   id,
 		conn: conn,
-		send: make(chan message, 256),
+		send: make(chan outgoingMessage, 256),
 	}
 }
 
 func (c *client) close(t *QuicTransport) {
 	if c.closed.CompareAndSwap(false, true) {
-		go t.onDisconnect(c.id)
 		t.CloseClient(c.id, 0, "client closed")
+
+		select {
+		case t.disconnectChan <- c.id:
+		case <-time.After(time.Second):
+			return
+		}
 	}
 }
 
-func (c *client) readPump(t *QuicTransport) {
+func (c *client) readPump(t *QuicTransport, ctx context.Context) {
 	defer c.close(t)
 
 	for {
-		stream, err := c.conn.AcceptStream(t.ctx)
+		stream, err := c.conn.AcceptStream(ctx)
 		if err != nil {
 			break
 		}
 
 		buf := *bufferPool.Get().(*[]byte)
 		n, err := stream.Read(buf)
+		stream.Close()
 		if err != nil {
 			bufferPool.Put(&buf)
 			break
@@ -57,33 +65,33 @@ func (c *client) readPump(t *QuicTransport) {
 		copy(message, buf[:n])
 		bufferPool.Put(&buf)
 
-		go t.onMessage(c.id, message)
+		go t.transmitMessage(c.id, message)
 	}
 }
 
-func (c *client) datagramPump(t *QuicTransport) {
+func (c *client) datagramPump(t *QuicTransport, ctx context.Context) {
 	defer c.close(t)
 
 	for {
-		message, err := c.conn.ReceiveDatagram(t.ctx)
+		message, err := c.conn.ReceiveDatagram(ctx)
 		if err != nil {
 			break
 		}
 
-		go t.onMessage(c.id, message)
+		go t.transmitMessage(c.id, message)
 	}
 }
 
-func (c *client) writePump(t *QuicTransport) {
+func (c *client) writePump(t *QuicTransport, ctx context.Context) {
 	defer func() {
 		if err := recover(); err != nil {
-			t.onError(fmt.Errorf("writePump panic for client %s: %v", c.id, err))
+			t.transmitError(fmt.Errorf("writePump panic for client %s: %v", c.id, err))
 		}
 	}()
 
 	for {
 		select {
-		case <-t.ctx.Done():
+		case <-ctx.Done():
 			return
 
 		case message, ok := <-c.send:
@@ -93,21 +101,21 @@ func (c *client) writePump(t *QuicTransport) {
 
 			if !message.Reliable {
 				if err := c.conn.SendDatagram(message.Content); err != nil {
-					t.onError(fmt.Errorf("failed sending datagram to client %s: %v", c.id, err))
+					t.transmitError(fmt.Errorf("failed sending datagram to client %s: %v", c.id, err))
 				}
-				return
+				continue
 			}
 
-			stream, err := c.conn.OpenStreamSync(t.ctx)
+			stream, err := c.conn.OpenStreamSync(ctx)
 			if err != nil {
-				t.onError(fmt.Errorf("failed opening stream for client %s: %v", c.id, err))
-				return
+				t.transmitError(fmt.Errorf("failed opening stream for client %s: %v", c.id, err))
+				continue
 			}
 
 			_, err = stream.Write(message.Content)
 			if err != nil {
-				t.onError(fmt.Errorf("failed writing to stream for client %s: %v", c.id, err))
-				return
+				t.transmitError(fmt.Errorf("failed writing to stream for client %s: %v", c.id, err))
+				continue
 			}
 
 			stream.Close()

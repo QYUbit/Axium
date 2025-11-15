@@ -8,63 +8,58 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
 )
 
 // Implements Transport
 type QuicTransport struct {
-	address      string
-	tlsConfig    *tls.Config
-	quicConfig   *quic.Config
-	listener     *quic.Listener
-	clients      map[string]*client
-	operations   chan hubOperation
-	ctx          context.Context
-	cancel       context.CancelFunc
-	clientMu     sync.RWMutex
-	onConnect    func(string, func(string), func(string))
-	onDisconnect func(string)
-	onMessage    func(string, []byte)
-	onError      func(error)
-	closed       atomic.Bool
+	address    string
+	tlsConfig  *tls.Config
+	quicConfig *quic.Config
+
+	listener *quic.Listener
+
+	clients  map[string]*client
+	clientMu sync.RWMutex
+
+	operations chan hubOperation
+
+	connectChan    chan ConnectionRequest
+	disconnectChan chan string
+	messageChan    chan Message
+	errorChan      chan error
+
+	closed          atomic.Bool
+	closeOnce       sync.Once
+	cancel          context.CancelFunc
+	connectionsDone chan struct{}
+	operationDone   chan struct{}
 }
 
 func NewQuicTransport(address string, tlsConf *tls.Config, config *quic.Config) *QuicTransport {
 	t := &QuicTransport{
-		address:    address,
-		tlsConfig:  tlsConf,
-		quicConfig: config,
-		clients:    make(map[string]*client),
-		operations: make(chan hubOperation, 100),
+		address:        address,
+		tlsConfig:      tlsConf,
+		quicConfig:     config,
+		clients:        make(map[string]*client),
+		operations:     make(chan hubOperation, 100),
+		connectChan:    make(chan ConnectionRequest, 10),
+		disconnectChan: make(chan string, 10),
+		messageChan:    make(chan Message, 100),
+		errorChan:      make(chan error, 5),
 	}
-
-	t.onConnect = func(_ string, accept func(string), reject func(string)) {
-		fmt.Println("New client connected")
-		accept(uuid.New().String())
-	}
-
-	t.onDisconnect = func(id string) {
-		fmt.Printf("Client %s disconnected\n", id)
-	}
-
-	t.onMessage = func(id string, b []byte) {
-		fmt.Printf("Received message by client %s: %s\n", id, b)
-	}
-
-	t.onError = func(err error) {
-		fmt.Println("An unhandled error occurred:", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.ctx = ctx
-	t.cancel = cancel
 
 	return t
 }
 
-func (t *QuicTransport) Start() error {
-	go t.run()
+func (t *QuicTransport) Start(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	t.cancel = cancel
+
+	t.connectionsDone = make(chan struct{})
+	t.operationDone = make(chan struct{})
+
+	go t.run(ctx)
 
 	listener, err := quic.ListenAddr(t.address, t.tlsConfig, t.quicConfig)
 	if err != nil {
@@ -72,49 +67,51 @@ func (t *QuicTransport) Start() error {
 	}
 	t.listener = listener
 
-	go t.acceptConnections()
+	go t.acceptConnections(ctx)
 	return nil
 }
 
-func (t *QuicTransport) acceptConnections() {
+func (t *QuicTransport) acceptConnections(ctx context.Context) {
+	defer close(t.connectionsDone)
+
 	for {
-		conn, err := t.listener.Accept(t.ctx)
+		conn, err := t.listener.Accept(ctx)
 		if err != nil {
 			select {
-			case <-t.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
-				t.onError(fmt.Errorf("failed accepting connection: %s", err))
+				t.transmitError(fmt.Errorf("failed accepting connection: %s", err))
 				continue
 			}
 		}
 
-		accept := func(id string) { t.registerClient(id, conn) }
-
-		reject := func(reason string) {
-			if reason == "" {
-				reason = "unauthorized"
-			}
-			conn.CloseWithError(quic.ApplicationErrorCode(0x000a), reason)
+		select {
+		case t.connectChan <- ConnectionRequest{RemoteAddr: conn.RemoteAddr().String()}:
+		case <-time.After(time.Second):
+			continue
 		}
-
-		go t.onConnect(conn.RemoteAddr().String(), accept, reject)
 	}
 }
 
-func (t *QuicTransport) run() {
+func (t *QuicTransport) run(ctx context.Context) {
+	defer func() {
+		close(t.operationDone)
+		close(t.operations)
+	}()
+
 	for {
 		select {
-		case <-t.ctx.Done():
+		case <-ctx.Done():
 			return
 
 		case op := <-t.operations:
-			t.handleOperation(op)
+			t.handleOperation(op, ctx)
 		}
 	}
 }
 
-func (t *QuicTransport) handleOperation(op hubOperation) {
+func (t *QuicTransport) handleOperation(op hubOperation, ctx context.Context) {
 	var err error
 
 	switch op.Type {
@@ -122,9 +119,9 @@ func (t *QuicTransport) handleOperation(op hubOperation) {
 		t.clientMu.Lock()
 		t.clients[op.Client.id] = op.Client
 		t.clientMu.Unlock()
-		go op.Client.readPump(t)
-		go op.Client.datagramPump(t)
-		go op.Client.writePump(t)
+		go op.Client.readPump(t, ctx)
+		go op.Client.datagramPump(t, ctx)
+		go op.Client.writePump(t, ctx)
 
 	case opUnregisterClient:
 		t.clientMu.Lock()
@@ -144,7 +141,7 @@ func (t *QuicTransport) handleOperation(op hubOperation) {
 			err = ErrClientNotFound{op.ClientId}
 		} else {
 			select {
-			case client.send <- message{Content: op.Message, Reliable: op.Reliable}:
+			case client.send <- outgoingMessage{Content: op.Message, Reliable: op.Reliable}:
 				// Message sent successfully
 			case <-time.After(time.Second):
 				err = fmt.Errorf("timeout sending message to client %s", op.ClientId)
@@ -157,17 +154,50 @@ func (t *QuicTransport) handleOperation(op hubOperation) {
 	}
 }
 
+func (t *QuicTransport) transmitError(err error) {
+	select {
+	case t.errorChan <- err:
+	case <-time.After(time.Second):
+		// Consumer timeout
+		return
+	}
+}
+
+func (t *QuicTransport) transmitMessage(id string, data []byte) {
+	select {
+	case t.messageChan <- Message{ClientId: id, Data: data}:
+	case <-time.After(time.Second):
+		return
+	}
+}
+
 func (t *QuicTransport) isClosed() bool {
 	return t.closed.Load()
 }
 
 func (t *QuicTransport) Close() error {
 	t.closed.Store(true)
-	t.cancel()
-	return t.listener.Close()
+
+	var lastError error
+
+	t.closeOnce.Do(func() {
+		t.cancel()
+
+		<-t.connectionsDone
+		<-t.operationDone
+
+		close(t.connectChan)
+		close(t.disconnectChan)
+		close(t.messageChan)
+		close(t.errorChan)
+
+		lastError = t.listener.Close()
+	})
+
+	return lastError
 }
 
-func (t *QuicTransport) registerClient(clientId string, conn quic.Connection) error {
+func (t *QuicTransport) RegisterClient(clientId string, conn quic.Connection) error {
 	if t.isClosed() {
 		return ErrTransportClosed
 	}
@@ -202,6 +232,17 @@ func (t *QuicTransport) CloseClient(id string, code int, reason string) error {
 	return <-response
 }
 
+func (t *QuicTransport) GetClients() []string {
+	t.clientMu.RLock()
+	defer t.clientMu.RUnlock()
+
+	ids := make([]string, 0, len(t.clients))
+	for id := range t.clients {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (t *QuicTransport) Send(clientId string, message []byte, reliable bool) error {
 	if t.isClosed() {
 		return ErrTransportClosed
@@ -221,48 +262,46 @@ func (t *QuicTransport) Send(clientId string, message []byte, reliable bool) err
 }
 
 func (t *QuicTransport) Broadcast(clientIds []string, message []byte, reliable bool) error {
-	if t.isClosed() {
-		return ErrTransportClosed
+	if len(clientIds) == 0 {
+		return nil
 	}
 
-	response := make(chan error)
-
+	errChan := make(chan error, len(clientIds))
 	for _, id := range clientIds {
 		t.operations <- hubOperation{
 			Type:     opSendMessage,
 			ClientId: id,
 			Message:  message,
-			Response: response,
+			Response: errChan,
 			Reliable: reliable,
 		}
 	}
 
-	return <-response
-}
-
-func (t *QuicTransport) GetClients() []string {
-	t.clientMu.RLock()
-	defer t.clientMu.RUnlock()
-
-	ids := make([]string, 0, len(t.clients))
-	for id := range t.clients {
-		ids = append(ids, id)
+	var errs []error
+	for range clientIds {
+		if err := <-errChan; err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return ids
+
+	if len(errs) > 0 {
+		return fmt.Errorf("broadcast failed for %d/%d clients: %v", len(errs), len(clientIds), errs[0])
+	}
+	return nil
 }
 
-func (t *QuicTransport) OnConnect(fn func(string, func(string), func(string))) {
-	t.onConnect = fn
+func (t *QuicTransport) Connections() <-chan ConnectionRequest {
+	return t.connectChan
 }
 
-func (t *QuicTransport) OnDisconnect(fn func(string)) {
-	t.onDisconnect = fn
+func (t *QuicTransport) Disconnections() <-chan string {
+	return t.disconnectChan
 }
 
-func (t *QuicTransport) OnMessage(fn func(string, []byte)) {
-	t.onMessage = fn
+func (t *QuicTransport) Messages() <-chan Message {
+	return t.messageChan
 }
 
-func (t *QuicTransport) OnError(fn func(error)) {
-	t.onError = fn
+func (t *QuicTransport) Errors() <-chan error {
+	return t.errorChan
 }
