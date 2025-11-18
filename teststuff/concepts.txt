@@ -1,5 +1,0 @@
-# packages
-
-- axium core: server, room & session management, message handling
-- quic transport: quic-go transport abstraction
-- axium engine: state, physics

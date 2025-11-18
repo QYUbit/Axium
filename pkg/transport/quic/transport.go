@@ -2,16 +2,19 @@ package quic
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/QYUbit/Axium/pkg/transport"
 	"github.com/quic-go/quic-go"
 )
 
-// Implements Transport
+// Implements transport.Transport
 type QuicTransport struct {
 	address    string
 	tlsConfig  *tls.Config
@@ -24,10 +27,13 @@ type QuicTransport struct {
 
 	operations chan hubOperation
 
-	connectChan    chan ConnectionRequest
+	connectChan    chan transport.Connection
 	disconnectChan chan string
-	messageChan    chan Message
+	messageChan    chan transport.Message
 	errorChan      chan error
+
+	idGenerator transport.IdGenerator
+	validator   transport.ConnectionValidator
 
 	closed          atomic.Bool
 	closeOnce       sync.Once
@@ -43,9 +49,9 @@ func NewQuicTransport(address string, tlsConf *tls.Config, config *quic.Config) 
 		quicConfig:     config,
 		clients:        make(map[string]*client),
 		operations:     make(chan hubOperation, 100),
-		connectChan:    make(chan ConnectionRequest, 10),
+		connectChan:    make(chan transport.Connection, 10),
 		disconnectChan: make(chan string, 10),
-		messageChan:    make(chan Message, 100),
+		messageChan:    make(chan transport.Message, 100),
 		errorChan:      make(chan error, 5),
 	}
 
@@ -86,8 +92,31 @@ func (t *QuicTransport) acceptConnections(ctx context.Context) {
 			}
 		}
 
+		if t.validator != nil {
+			accept, reason := t.validator(conn.RemoteAddr().String())
+			if !accept {
+				conn.CloseWithError(quic.ApplicationErrorCode(0x000a), reason)
+				return
+			}
+		}
+
+		var id string
+		if t.idGenerator != nil {
+			id = t.idGenerator()
+		} else {
+			b := make([]byte, 16)
+			if _, err := rand.Read(b); err != nil {
+				id = fmt.Sprintf("%d", time.Now().UnixNano())
+			}
+			id = hex.EncodeToString(b)
+		}
+
+		if err := t.registerClient(id, conn); err != nil {
+			t.transmitError(err)
+		}
+
 		select {
-		case t.connectChan <- ConnectionRequest{RemoteAddr: conn.RemoteAddr().String()}:
+		case t.connectChan <- transport.Connection{}:
 		case <-time.After(time.Second):
 			continue
 		}
@@ -165,7 +194,7 @@ func (t *QuicTransport) transmitError(err error) {
 
 func (t *QuicTransport) transmitMessage(id string, data []byte) {
 	select {
-	case t.messageChan <- Message{ClientId: id, Data: data}:
+	case t.messageChan <- transport.Message{ClientId: id, Data: data}:
 	case <-time.After(time.Second):
 		return
 	}
@@ -197,7 +226,7 @@ func (t *QuicTransport) Close() error {
 	return lastError
 }
 
-func (t *QuicTransport) RegisterClient(clientId string, conn quic.Connection) error {
+func (t *QuicTransport) registerClient(clientId string, conn quic.Connection) error {
 	if t.isClosed() {
 		return ErrTransportClosed
 	}
@@ -290,7 +319,7 @@ func (t *QuicTransport) Broadcast(clientIds []string, message []byte, reliable b
 	return nil
 }
 
-func (t *QuicTransport) Connections() <-chan ConnectionRequest {
+func (t *QuicTransport) Connections() <-chan transport.Connection {
 	return t.connectChan
 }
 
@@ -298,10 +327,18 @@ func (t *QuicTransport) Disconnections() <-chan string {
 	return t.disconnectChan
 }
 
-func (t *QuicTransport) Messages() <-chan Message {
+func (t *QuicTransport) Messages() <-chan transport.Message {
 	return t.messageChan
 }
 
 func (t *QuicTransport) Errors() <-chan error {
 	return t.errorChan
+}
+
+func (t *QuicTransport) SetIdGenerator(idGenerator transport.IdGenerator) {
+	t.idGenerator = idGenerator
+}
+
+func (t *QuicTransport) SetValidator(validator transport.ConnectionValidator) {
+	t.validator = validator
 }
