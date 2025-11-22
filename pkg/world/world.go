@@ -1,4 +1,6 @@
-package ecs
+// Package world provides an API to manage game data via entity-component-system
+// and to orchestrate user inputs as well as state manipulation.
+package world
 
 import (
 	"fmt"
@@ -27,11 +29,36 @@ type Component interface {
 	Type() string
 }
 
+// ============================================================================
+// System Types
+// ============================================================================
+
 type System interface {
-	Update(dt time.Duration, entities []EntityId, world *World)
-	Components() []ComponentType
+	Init(world *World)
+	Update(world *World, dt time.Duration)
+	Name() string
 	Priority() int
 }
+
+type BaseSystem struct {
+	name     string
+	priority int
+}
+
+func NewBaseSystem(name string, priority int) *BaseSystem {
+	return &BaseSystem{
+		name:     name,
+		priority: priority,
+	}
+}
+
+func (bs *BaseSystem) Init(world *World) {}
+
+func (bs *BaseSystem) Update(world *World, dt time.Duration) {}
+
+func (bs *BaseSystem) Name() string { return bs.name }
+
+func (bs *BaseSystem) Priority() int { return bs.priority }
 
 // ============================================================================
 // Delta Types
@@ -53,7 +80,7 @@ type Delta struct {
 	Component Component
 }
 
-type ClientDelta struct {
+type DeltaResult struct {
 	BaseVersion    uint64
 	NewVersion     uint64
 	Deltas         []Delta
@@ -221,10 +248,6 @@ func (cs *ClientState) getLastVersion() uint64 {
 // World
 // ============================================================================
 
-type Protocol interface {
-	EncodeDelta(delta *ClientDelta) ([]byte, error)
-}
-
 type World struct {
 	// Entity management
 	nextEntityId atomic.Uint64
@@ -249,23 +272,51 @@ type World struct {
 	// Client management
 	clients   map[ClientId]*ClientState
 	clientsMu sync.RWMutex
+
+	// Message handling
+	messages     []Message
+	messagesMu   sync.Mutex
+	maxMsgBuffer int
+
+	// System management
+	systems   []System
+	systemsMu sync.RWMutex
+
+	// Event management
+	handlers   map[string][]EventHandler
+	handlersMu sync.RWMutex
+	queue      []Event
+	queueMu    sync.Mutex
+}
+
+type WorldOptions struct {
+	MaxHistoryDeltas  int
+	EventBufferSize   int
+	MessageBufferSize int
+}
+
+var DefaultWorldOptions WorldOptions = WorldOptions{
+	MaxHistoryDeltas:  300,
+	EventBufferSize:   265,
+	MessageBufferSize: 265,
 }
 
 func NewWorld() *World {
-	return NewWorldWithHistory(300)
+	return NewWorldWithOptions(DefaultWorldOptions)
 }
 
-func NewWorldWithHistory(maxHistoryDeltas int) *World {
+func NewWorldWithOptions(opts WorldOptions) *World {
 	w := &World{
+		deltaHistory:      newDeltaHistory(opts.MaxHistoryDeltas),
 		entities:          make(map[EntityId]struct{}),
 		components:        make(map[ComponentType]*componentStore),
 		createdEntities:   make(map[EntityId]struct{}),
 		destroyedEntities: make(map[EntityId]struct{}),
-		deltaHistory:      newDeltaHistory(maxHistoryDeltas),
 		clients:           make(map[ClientId]*ClientState),
+		handlers:          make(map[string][]EventHandler),
+		messages:          make([]Message, opts.MessageBufferSize),
+		queue:             make([]Event, opts.EventBufferSize),
 	}
-	w.nextEntityId.Store(1)
-	w.currentVersion.Store(0)
 	return w
 }
 
@@ -399,6 +450,74 @@ func (w *World) HasComponent(entityId EntityId, compType ComponentType) bool {
 
 	_, has := store.get(entityId)
 	return has
+}
+
+// ============================================================================
+// Query Builder
+// ============================================================================
+
+type Query struct {
+	requiredComponents []ComponentType
+	excludedComponents []ComponentType
+}
+
+func NewQuery() *Query {
+	return &Query{
+		requiredComponents: make([]ComponentType, 0),
+		excludedComponents: make([]ComponentType, 0),
+	}
+}
+
+func (q *Query) With(componentType ...ComponentType) *Query {
+	q.requiredComponents = append(q.requiredComponents, componentType...)
+	return q
+}
+
+func (q *Query) Without(componentType ...ComponentType) *Query {
+	q.excludedComponents = append(q.excludedComponents, componentType...)
+	return q
+}
+
+func (q *Query) Execute(world *World) []EntityId {
+	result := make([]EntityId, 0)
+
+	world.entitiesMu.RLock()
+	entities := make([]EntityId, 0, len(world.entities))
+	for entityId := range world.entities {
+		entities = append(entities, entityId)
+	}
+	world.entitiesMu.RUnlock()
+
+	for _, entityId := range entities {
+		if q.matches(world, entityId) {
+			result = append(result, entityId)
+		}
+	}
+
+	return result
+}
+
+func (q *Query) matches(world *World, entityId EntityId) bool {
+	for _, compType := range q.requiredComponents {
+		if !world.HasComponent(entityId, compType) {
+			return false
+		}
+	}
+
+	for _, compType := range q.excludedComponents {
+		if world.HasComponent(entityId, compType) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (q *Query) ForEach(world *World, callback func(entityId EntityId)) {
+	entities := q.Execute(world)
+	for _, entityId := range entities {
+		callback(entityId)
+	}
 }
 
 // ============================================================================
@@ -578,14 +697,14 @@ func (dh *DeltaHistory) getRange(fromVersion, toVersion uint64) ([]HistoricalDel
 	return result, true
 }
 
-func (w *World) GenerateDeltas() (map[ClientId]*ClientDelta, error) {
+func (w *World) GenerateDeltas() (map[ClientId]*DeltaResult, error) {
 	currentVersion := w.currentVersion.Add(1)
 
 	// Store current changes in history
 	historicalDelta := w.captureHistoricalDelta(currentVersion)
 	w.deltaHistory.add(historicalDelta)
 
-	result := make(map[ClientId]*ClientDelta)
+	result := make(map[ClientId]*DeltaResult)
 
 	w.clientsMu.RLock()
 	clients := make(map[ClientId]*ClientState, len(w.clients))
@@ -647,8 +766,8 @@ func (w *World) captureHistoricalDelta(version uint64) HistoricalDelta {
 	return delta
 }
 
-func (w *World) buildDeltaFromHistory(client *ClientState, history []HistoricalDelta, baseVersion, newVersion uint64) *ClientDelta {
-	delta := &ClientDelta{
+func (w *World) buildDeltaFromHistory(client *ClientState, history []HistoricalDelta, baseVersion, newVersion uint64) *DeltaResult {
+	delta := &DeltaResult{
 		BaseVersion: baseVersion,
 		NewVersion:  newVersion,
 		Deltas:      make([]Delta, 0),
@@ -725,7 +844,7 @@ func (w *World) buildDeltaFromHistory(client *ClientState, history []HistoricalD
 	return delta
 }
 
-func (w *World) generateDeltaForClient(client *ClientState, version uint64) *ClientDelta {
+func (w *World) generateDeltaForClient(client *ClientState, version uint64) *DeltaResult {
 	clientVersion := client.getLastVersion()
 
 	if clientVersion == version-1 {
@@ -740,7 +859,7 @@ func (w *World) generateDeltaForClient(client *ClientState, version uint64) *Cli
 
 		if !found {
 			// Client is too far behind, needs full snapshot
-			return &ClientDelta{
+			return &DeltaResult{
 				ResyncRequired: true,
 			}
 		}
@@ -750,13 +869,13 @@ func (w *World) generateDeltaForClient(client *ClientState, version uint64) *Cli
 	}
 
 	// Client version is somehow ahead (shouldn't happen)
-	return &ClientDelta{
+	return &DeltaResult{
 		ResyncRequired: true,
 	}
 }
 
-func (w *World) buildDeltaFromCurrent(client *ClientState, baseVersion, newVersion uint64) *ClientDelta {
-	delta := &ClientDelta{
+func (w *World) buildDeltaFromCurrent(client *ClientState, baseVersion, newVersion uint64) *DeltaResult {
+	delta := &DeltaResult{
 		BaseVersion: baseVersion,
 		NewVersion:  newVersion,
 		Deltas:      make([]Delta, 0),
@@ -811,6 +930,159 @@ func (w *World) buildDeltaFromCurrent(client *ClientState, baseVersion, newVersi
 	w.componentsMu.RUnlock()
 
 	return delta
+}
+
+// ============================================================================
+// Message Handling
+// ============================================================================
+
+type Message struct {
+	Type      string
+	Payload   any
+	Timestamp time.Time
+}
+
+func (w *World) PushMessage(msg Message) bool {
+	w.messagesMu.Lock()
+	defer w.messagesMu.Unlock()
+
+	if len(w.messages) >= w.maxMsgBuffer {
+		return false
+	}
+
+	msg.Timestamp = time.Now()
+	w.messages = append(w.messages, msg)
+	return true
+}
+
+func (w *World) CollectMessages() []Message {
+	w.messagesMu.Lock()
+	defer w.messagesMu.Unlock()
+
+	messages := w.messages
+	w.messages = make([]Message, 0, w.maxMsgBuffer)
+	return messages
+}
+
+func (w *World) MsgBufferLen() int {
+	w.messagesMu.Lock()
+	defer w.messagesMu.Unlock()
+	return len(w.messages)
+}
+
+// ============================================================================
+// System Management
+// ============================================================================
+
+func (w *World) RegisterSystem(system System) {
+	w.systemsMu.Lock()
+	defer w.systemsMu.Unlock()
+
+	system.Init(w)
+
+	inserted := false
+	// Insert in order
+	for i, s := range w.systems {
+		if system.Priority() < s.Priority() {
+			w.systems = append(w.systems[:i], append([]System{system}, w.systems[i:]...)...)
+			inserted = true
+			break
+		}
+	}
+
+	if !inserted {
+		w.systems = append(w.systems, system)
+	}
+}
+
+func (w *World) UnregisterSystem(name string) {
+	w.systemsMu.Lock()
+	defer w.systemsMu.Unlock()
+
+	for i, system := range w.systems {
+		if system.Name() == name {
+			w.systems = append(w.systems[:i], w.systems[i+1:]...)
+			break
+		}
+	}
+}
+
+func (w *World) Update(dt time.Duration) {
+	w.ProcessQueue()
+
+	w.systemsMu.RLock()
+	for _, system := range w.systems {
+		system.Update(w, dt)
+	}
+	w.systemsMu.RUnlock()
+}
+
+func (w *World) GetSystem(name string) System {
+	w.systemsMu.RLock()
+	defer w.systemsMu.RUnlock()
+
+	for _, system := range w.systems {
+		if system.Name() == name {
+			return system
+		}
+	}
+	return nil
+}
+
+// ============================================================================
+// Event Management
+// ============================================================================
+
+type Event interface {
+	Type() string
+	SetTimestamp(t time.Time)
+}
+
+type EventHandler func(event Event)
+
+func (w *World) On(eventType string, handler EventHandler) {
+	w.handlersMu.Lock()
+	defer w.handlersMu.Unlock()
+	w.handlers[eventType] = append(w.handlers[eventType], handler)
+}
+
+func (w *World) Off(eventType string) {
+	w.handlersMu.Lock()
+	defer w.handlersMu.Unlock()
+	delete(w.handlers, eventType)
+}
+
+func (w *World) Emit(event Event) {
+	event.SetTimestamp(time.Now())
+
+	w.handlersMu.RLock()
+	handlers, exists := w.handlers[event.Type()]
+	w.handlersMu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	for _, handler := range handlers {
+		handler(event)
+	}
+}
+
+func (w *World) Queue(event Event) {
+	w.queueMu.Lock()
+	defer w.queueMu.Unlock()
+	w.queue = append(w.queue, event)
+}
+
+func (w *World) ProcessQueue() {
+	w.queueMu.Lock()
+	events := w.queue
+	w.queue = make([]Event, 0, 256)
+	w.queueMu.Unlock()
+
+	for _, event := range events {
+		w.Emit(event)
+	}
 }
 
 // ============================================================================
