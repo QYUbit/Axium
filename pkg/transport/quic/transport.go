@@ -1,3 +1,4 @@
+// Package quic implements transport.Transport using quic-go.
 package quic
 
 import (

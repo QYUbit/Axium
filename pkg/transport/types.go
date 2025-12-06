@@ -1,3 +1,4 @@
+// Package transport serves as a network abstraction at (not necessarily) transport level.
 package transport
 
 import "context"
