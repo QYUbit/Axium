@@ -87,6 +87,33 @@ type StoreConfig struct {
 	RowCapacity      int
 }
 
+type store interface {
+	// Components
+	registerComponent(t reflect.Type) ComponentID
+	AddComponent(eid EntityID, cid ComponentID) bool
+	RemoveComponent(eid EntityID, cid ComponentID) bool
+	HasComponent(eid EntityID, cid ComponentID) bool
+	setComponent(eid EntityID, cid ComponentID, src unsafe.Pointer) bool
+	getComponent(eid EntityID, cid ComponentID) (unsafe.Pointer, bool)
+	MarkDirty(eid EntityID, cid ComponentID) bool
+
+	// Entities
+	CreateEntityWithComponents(cids []ComponentID) EntityID
+	DestroyEntity(eid EntityID) bool
+	EntityExists(eid EntityID) bool
+
+	// Stats
+	EntityCount() int
+	GetStats() StoreStats
+
+	// Cleanup
+	Cleanup(aggressive bool)
+	SetCleanupThreshold(threshold int)
+
+	// Delta
+	GenerateDelta() DeltaRecord
+}
+
 type Store struct {
 	archetypes        sync.Map // ArchetypeID -> *Archetype
 	components        sync.Map // ComponentID -> Component
@@ -157,10 +184,7 @@ func (s *Store) SetCleanupThreshold(threshold int) {
 	s.cleanupThreshold = threshold
 }
 
-func RegisterComponent[T any](s *Store) ComponentID {
-	var zero T
-	t := reflect.TypeOf(zero)
-
+func (s *Store) registerComponent(t reflect.Type) ComponentID {
 	c := Component{
 		id:    ComponentID(s.nextComponent.Add(1)),
 		typ:   t,
@@ -215,14 +239,6 @@ func (s *Store) GetRaw(eid EntityID, cid ComponentID) (unsafe.Pointer, bool) {
 
 	ptr := unsafe.Pointer(&chu.data[e.row*a.rowSize+off])
 	return ptr, true
-}
-
-func Get[T any](s *Store, eid EntityID, cid ComponentID) (*T, bool) {
-	ptr, ok := s.GetRaw(eid, cid)
-	if !ok {
-		return nil, false
-	}
-	return (*T)(ptr), true
 }
 
 func (s *Store) SetRaw(eid EntityID, cid ComponentID, src unsafe.Pointer) bool {
@@ -281,10 +297,6 @@ func (s *Store) SetRaw(eid EntityID, cid ComponentID, src unsafe.Pointer) bool {
 	return true
 }
 
-func Set[T any](s *Store, eid EntityID, cid ComponentID, value *T) bool {
-	return s.SetRaw(eid, cid, unsafe.Pointer(value))
-}
-
 func (s *Store) getOrCreateArchetype(components []ComponentID) *Archetype {
 	if len(components) >= 128 {
 		return nil
@@ -337,10 +349,6 @@ func (s *Store) getOrCreateArchetype(components []ComponentID) *Archetype {
 		return actual.(*Archetype)
 	}
 	return a
-}
-
-func (s *Store) CreateEntity() EntityID {
-	return s.CreateEntityWithComponents(nil)
 }
 
 func (s *Store) CreateEntityWithComponents(cids []ComponentID) EntityID {
@@ -416,8 +424,9 @@ func (s *Store) DestroyEntity(eid EntityID) bool {
 	return true
 }
 
-type DestroyEntityEvent struct {
-	EntityID EntityID
+func (s *Store) EntityExists(eid EntityID) bool {
+	_, exists := s.entities.Load(eid)
+	return exists
 }
 
 func (s *Store) moveEntity(from, to *Archetype, eid EntityID) bool {
@@ -575,8 +584,29 @@ func (s *Store) MarkDirty(eid EntityID, cid ComponentID) bool {
 	return true
 }
 
-func (s *Store) GetDirtyComponents() map[EntityID]map[ComponentID]unsafe.Pointer {
-	results := make(map[EntityID]map[ComponentID]unsafe.Pointer)
+type EntityDelta struct {
+	Added   []ComponentID
+	Removed []ComponentID
+	Dirty   map[ComponentID]unsafe.Pointer
+}
+
+type DeltaRecord struct {
+	Created   []EntityID
+	Destroyed []EntityID
+	Entities  map[EntityID]EntityDelta
+}
+
+func (s *Store) GenerateDelta() DeltaRecord {
+	delta := DeltaRecord{
+		Entities: make(map[EntityID]EntityDelta),
+	}
+
+	s.entitiesMu.Lock()
+	delta.Created = s.createdEntities
+	delta.Destroyed = s.destroyedEntities
+	s.createdEntities = s.createdEntities[:0]
+	s.destroyedEntities = s.destroyedEntities[:0]
+	s.entitiesMu.Unlock()
 
 	s.entities.Range(func(key, value any) bool {
 		eid := key.(EntityID)
@@ -601,6 +631,12 @@ func (s *Store) GetDirtyComponents() map[EntityID]map[ComponentID]unsafe.Pointer
 			return true
 		}
 
+		entityDelta := EntityDelta{
+			Dirty:   make(map[ComponentID]unsafe.Pointer),
+			Added:   e.addedComponents,
+			Removed: e.removedComponents,
+		}
+
 		e.archetype.mu.RLock()
 		for cid, idx := range e.archetype.componentIdx {
 			if !dirtyMask.has(idx) {
@@ -612,38 +648,17 @@ func (s *Store) GetDirtyComponents() map[EntityID]map[ComponentID]unsafe.Pointer
 			e.archetype.mu.RLock()
 
 			if ok {
-				if results[eid] == nil {
-					results[eid] = make(map[ComponentID]unsafe.Pointer)
-				}
-				results[eid][cid] = ptr
+				entityDelta.Dirty[cid] = ptr
 			}
 		}
 		e.archetype.mu.RUnlock()
 
+		delta.Entities[eid] = entityDelta
+
 		return true
 	})
 
-	return results
-}
-
-type DirtyRecord struct {
-	CreatedEntities   []EntityID
-	DestroyedEntities []EntityID
-}
-
-func (s *Store) GetDirtyMeta() DirtyRecord {
-	s.entitiesMu.Lock()
-	defer s.entitiesMu.Unlock()
-
-	dr := DirtyRecord{
-		CreatedEntities:   s.createdEntities,
-		DestroyedEntities: s.destroyedEntities,
-	}
-
-	s.createdEntities = s.createdEntities[:0]
-	s.destroyedEntities = s.destroyedEntities[:0]
-
-	return dr
+	return delta
 }
 
 func (s *Store) EntityCount() int {
