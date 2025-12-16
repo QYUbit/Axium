@@ -8,15 +8,21 @@ import (
 	"time"
 )
 
-type EntityID uint32
+type EntityID uint64
+type ComponentID uint16
+
+type Component interface {
+	Id() ComponentID
+}
 
 // ==================================================================
 // World
 // ==================================================================
 
 type World struct {
-	entities map[EntityID]struct{}
-	stores   map[reflect.Type]TypedStore
+	entities   map[EntityID]struct{}
+	stores     map[reflect.Type]TypedStore
+	singletons map[reflect.Type]any
 
 	initSystems []*system
 	systems     []*system
@@ -25,31 +31,16 @@ type World struct {
 
 func NewWorld() *World {
 	return &World{
-		entities: make(map[EntityID]struct{}),
-		stores:   make(map[reflect.Type]TypedStore),
+		entities:   make(map[EntityID]struct{}),
+		stores:     make(map[reflect.Type]TypedStore),
+		singletons: make(map[reflect.Type]any),
 	}
 }
 
-func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
-	t := reflect.TypeFor[T]()
+type Plugin func(w *World)
 
-	s, ok := w.stores[t]
-	if !ok {
-		return nil, false
-	}
-	store, ok := s.(*Store[T])
-	return store, ok
-}
-
-func RegisterType[T any](w *World) {
-	t := reflect.TypeFor[T]()
-
-	s := &Store[T]{
-		typ:           t,
-		entityToDense: make(map[EntityID]int),
-	}
-
-	w.stores[t] = s
+func (w *World) RegisterPlugin(plugin Plugin) {
+	plugin(w)
 }
 
 // ==================================================================
@@ -107,7 +98,7 @@ func AddField[T any](cb *CommandBuffer, id EntityID, initial T) {
 		Op:        AddComponentToEntity,
 		EntityId:  id,
 		Type:      t,
-		Value:     initial,
+		Value:     initial, // ! Boxing
 		Timestamp: time.Now().UnixNano(),
 	})
 }
@@ -200,23 +191,27 @@ type SystemContext struct {
 type System func(ctx SystemContext)
 
 type system struct {
-	reads    TypeMask
-	writes   TypeMask
+	reads    map[ComponentID]struct{}
+	writes   map[ComponentID]struct{}
 	runner   func(ctx SystemContext)
 	commands *CommandBuffer
 }
 
-func (w *World) RegisterSystem(sys System, trigger SystemTrigger, reads, writes TypeMask) {
-	if reads == nil {
-		reads = map[reflect.Type]struct{}{}
+func (w *World) RegisterSystem(sys System, trigger SystemTrigger, reads, writes []Component) {
+	rs := map[ComponentID]struct{}{}
+	ws := map[ComponentID]struct{}{}
+
+	for _, c := range reads {
+		rs[c.Id()] = struct{}{}
 	}
-	if writes == nil {
-		writes = map[reflect.Type]struct{}{}
+
+	for _, c := range writes {
+		ws[c.Id()] = struct{}{}
 	}
 
 	s := &system{
-		reads:    reads,
-		writes:   writes,
+		reads:    rs,
+		writes:   ws,
 		runner:   sys,
 		commands: &CommandBuffer{},
 	}
@@ -348,8 +343,87 @@ func systemsConflict(a, b *system) bool {
 }
 
 // ==================================================================
+// Singleton
+// ==================================================================
+
+type SingletonStore[T any] struct {
+	data  T
+	dirty bool
+}
+
+func RegisterSingleton[T Component](w *World, initial T) {
+	t := reflect.TypeFor[T]()
+
+	store := &SingletonStore[T]{
+		data: initial,
+	}
+
+	w.singletons[t] = store
+}
+
+func GetSingleton[T any](w *World) *T {
+	t := reflect.TypeFor[T]()
+	s := w.singletons[t]
+
+	store, ok := s.(*SingletonStore[T])
+	if !ok {
+		return nil
+	}
+
+	return &store.data
+}
+
+func GetMutableSingleton[T any](w *World) *T {
+	t := reflect.TypeFor[T]()
+	s := w.singletons[t]
+
+	store, ok := s.(*SingletonStore[T])
+	if !ok {
+		return nil
+	}
+
+	store.dirty = true
+	return &store.data
+}
+
+func GetStaticSingleton[T any](w *World) T {
+	t := reflect.TypeFor[T]()
+	s := w.singletons[t]
+
+	store, ok := s.(*SingletonStore[T])
+	if !ok {
+		var zero T
+		return zero
+	}
+
+	return store.data
+}
+
+// ==================================================================
 // Store
 // ==================================================================
+
+func RegisterComponent[T Component](w *World) {
+	t := reflect.TypeFor[T]()
+
+	s := &Store[T]{
+		typ:           t,
+		entityToDense: make(map[EntityID]int),
+	}
+
+	w.stores[t] = s
+}
+
+func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
+	t := reflect.TypeFor[T]()
+
+	s, ok := w.stores[t]
+	if !ok {
+		return nil, false
+	}
+	store, ok := s.(*Store[T])
+	return store, ok
+}
 
 type TypedStore interface {
 	GetEntities() []EntityID
@@ -362,8 +436,8 @@ type Store[T any] struct {
 	typ           reflect.Type
 	entityToDense map[EntityID]int
 	denseToEntity []EntityID
-	Data          []T
-	ChangeTicks   []uint64
+	data          []T
+	dirty         []bool
 }
 
 func (s *Store[T]) Add(id EntityID, value any) {
@@ -376,12 +450,12 @@ func (s *Store[T]) Add(id EntityID, value any) {
 		return
 	}
 
-	newIndex := len(s.Data)
+	newIndex := len(s.data)
 
-	s.Data = append(s.Data, initial)
+	s.data = append(s.data, initial)
 	s.denseToEntity = append(s.denseToEntity, id)
 
-	s.ChangeTicks = append(s.ChangeTicks, 0)
+	s.dirty = append(s.dirty, false)
 
 	s.entityToDense[id] = newIndex
 }
@@ -392,20 +466,20 @@ func (s *Store[T]) Remove(id EntityID) {
 		return
 	}
 
-	lastIndex := len(s.Data) - 1
+	lastIndex := len(s.data) - 1
 	lastEntityID := s.denseToEntity[lastIndex]
 
 	if idx != lastIndex {
-		s.Data[idx] = s.Data[lastIndex]
+		s.data[idx] = s.data[lastIndex]
 		s.denseToEntity[idx] = lastEntityID
-		s.ChangeTicks[idx] = s.ChangeTicks[lastIndex]
+		s.dirty[idx] = s.dirty[lastIndex]
 
 		s.entityToDense[lastEntityID] = idx
 	}
 
-	s.Data = s.Data[:lastIndex]
+	s.data = s.data[:lastIndex]
 	s.denseToEntity = s.denseToEntity[:lastIndex]
-	s.ChangeTicks = s.ChangeTicks[:lastIndex]
+	s.dirty = s.dirty[:lastIndex]
 
 	delete(s.entityToDense, id)
 }
@@ -420,17 +494,17 @@ func (s *Store[T]) HasEntity(id EntityID) bool {
 }
 
 func (s *Store[T]) Get(id EntityID) *T {
-	return &s.Data[s.entityToDense[id]]
+	return &s.data[s.entityToDense[id]]
 }
 
 func (s *Store[T]) GetMutable(id EntityID) *T {
 	idx := s.entityToDense[id]
-	s.ChangeTicks[idx]++
-	return &s.Data[idx]
+	s.dirty[idx] = true
+	return &s.data[idx]
 }
 
 func (s *Store[T]) GetStatic(id EntityID) T {
-	return s.Data[s.entityToDense[id]]
+	return s.data[s.entityToDense[id]]
 }
 
 // ==================================================================
@@ -438,7 +512,16 @@ func (s *Store[T]) GetStatic(id EntityID) T {
 // ==================================================================
 
 type Position struct{ X, Y float64 }
+
+func (Position) Id() ComponentID { return 0 }
+
 type Velocity struct{ X, Y float64 }
+
+func (Velocity) Id() ComponentID { return 1 }
+
+type GameSpeed struct{ Speed float64 }
+
+func (GameSpeed) Id() ComponentID { return 1001 }
 
 func SetupSystem(ctx SystemContext) {
 	player := EntityID(0)
@@ -451,12 +534,14 @@ func SetupSystem(ctx SystemContext) {
 func MovementSystem(ctx SystemContext) {
 	q := Query2[Position, Velocity](ctx.World)
 
+	gameSpeed := GetSingleton[GameSpeed](ctx.World)
+
 	for q.Next() {
 		pos := q.GetMutable1()
 		vel := q.Get2()
 
-		pos.X += vel.X * ctx.Dt
-		pos.Y += vel.Y * ctx.Dt
+		pos.X += vel.X * ctx.Dt * gameSpeed.Speed
+		pos.Y += vel.Y * ctx.Dt * gameSpeed.Speed
 	}
 }
 
@@ -470,11 +555,11 @@ func PrintPositionsSystem(ctx SystemContext) {
 	}
 }
 
-func main() {
-	w := NewWorld()
+func MyGame(w *World) {
+	RegisterComponent[Position](w)
+	RegisterComponent[Velocity](w)
 
-	RegisterType[Position](w)
-	RegisterType[Velocity](w)
+	RegisterSingleton[GameSpeed](w, GameSpeed{1})
 
 	w.RegisterSystem(
 		SetupSystem,
@@ -486,16 +571,22 @@ func main() {
 	w.RegisterSystem(
 		MovementSystem,
 		OnUpdate,
-		NewTypeMask2[Position, Velocity](),
-		NewTypeMask1[Position](),
+		[]Component{Position{}, Velocity{}, GameSpeed{}},
+		[]Component{Position{}},
 	)
 
 	w.RegisterSystem(
 		PrintPositionsSystem,
 		OnUpdate,
-		NewTypeMask1[Position](),
+		[]Component{Position{}},
 		nil,
 	)
+}
+
+func main() {
+	w := NewWorld()
+
+	w.RegisterPlugin(MyGame)
 
 	w.Run()
 

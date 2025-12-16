@@ -13,3 +13,4 @@ to entities. Systems can query, mutate and process those components.
 - Better Queries
 - Better System scheduling
 - Query caching
+- Archetype storage
