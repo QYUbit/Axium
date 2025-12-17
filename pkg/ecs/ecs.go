@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"iter"
 	"reflect"
 	"slices"
 	"sync"
@@ -22,7 +23,9 @@ type Component interface {
 type World struct {
 	entities   map[EntityID]struct{}
 	stores     map[reflect.Type]TypedStore
+	storesById map[ComponentID]TypedStore
 	singletons map[reflect.Type]any
+	messages   map[reflect.Type]TypedMessageStore
 
 	initSystems []*system
 	systems     []*system
@@ -33,7 +36,9 @@ func NewWorld() *World {
 	return &World{
 		entities:   make(map[EntityID]struct{}),
 		stores:     make(map[reflect.Type]TypedStore),
+		storesById: make(map[ComponentID]TypedStore),
 		singletons: make(map[reflect.Type]any),
+		messages:   make(map[reflect.Type]TypedMessageStore),
 	}
 }
 
@@ -264,6 +269,10 @@ func (w *World) Update(dt float64) {
 	})
 
 	w.processCommands(commands)
+
+	for _, msgStore := range w.messages {
+		msgStore.swap()
+	}
 }
 
 func (w *World) Run() {
@@ -343,7 +352,65 @@ func systemsConflict(a, b *system) bool {
 }
 
 // ==================================================================
-// Singleton
+// Messages
+// ==================================================================
+
+type TypedMessageStore interface {
+	swap()
+}
+
+type MessageStore[T any] struct {
+	read  []T
+	write []T
+}
+
+func (s *MessageStore[T]) swap() {
+	s.read, s.write = s.write[:0], s.read
+}
+
+func RegisterMessage[T Component](w *World) {
+	t := reflect.TypeFor[T]()
+
+	store := &MessageStore[T]{
+		read:  make([]T, 0),
+		write: make([]T, 0),
+	}
+
+	w.messages[t] = store
+}
+
+func PushMessage[T any](w *World, msg T) {
+	t := reflect.TypeFor[T]()
+
+	s, ok := w.messages[t]
+	if !ok {
+		return
+	}
+
+	store, ok := s.(*MessageStore[T])
+	if ok {
+		store.write = append(store.write, msg)
+	}
+}
+
+func CollectMessages[T any](w *World) []T {
+	t := reflect.TypeFor[T]()
+
+	s, ok := w.messages[t]
+	if !ok {
+		return nil
+	}
+
+	store, ok := s.(*MessageStore[T])
+	if !ok {
+		return nil
+	}
+
+	return store.read
+}
+
+// ==================================================================
+// Singletons
 // ==================================================================
 
 type SingletonStore[T any] struct {
@@ -400,18 +467,20 @@ func GetStaticSingleton[T any](w *World) T {
 }
 
 // ==================================================================
-// Store
+// Components
 // ==================================================================
 
 func RegisterComponent[T Component](w *World) {
-	t := reflect.TypeFor[T]()
+	var z T
+	t := reflect.TypeOf(z)
 
 	s := &Store[T]{
-		typ:           t,
-		entityToDense: make(map[EntityID]int),
+		typ:    t,
+		sparse: make(map[EntityID]int),
 	}
 
 	w.stores[t] = s
+	w.storesById[z.Id()] = s
 }
 
 func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
@@ -427,17 +496,19 @@ func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
 
 type TypedStore interface {
 	GetEntities() []EntityID
+	Entities() iter.Seq[EntityID]
 	HasEntity(id EntityID) bool
 	Add(id EntityID, value any)
 	Remove(id EntityID)
+	Len() int
 }
 
 type Store[T any] struct {
-	typ           reflect.Type
-	entityToDense map[EntityID]int
-	denseToEntity []EntityID
-	data          []T
-	dirty         []bool
+	typ    reflect.Type
+	sparse map[EntityID]int
+	dense  []EntityID
+	data   []T
+	dirty  []bool
 }
 
 func (s *Store[T]) Add(id EntityID, value any) {
@@ -453,58 +524,77 @@ func (s *Store[T]) Add(id EntityID, value any) {
 	newIndex := len(s.data)
 
 	s.data = append(s.data, initial)
-	s.denseToEntity = append(s.denseToEntity, id)
+	s.dense = append(s.dense, id)
 
 	s.dirty = append(s.dirty, false)
 
-	s.entityToDense[id] = newIndex
+	s.sparse[id] = newIndex
 }
 
 func (s *Store[T]) Remove(id EntityID) {
-	idx, exists := s.entityToDense[id]
+	idx, exists := s.sparse[id]
 	if !exists {
 		return
 	}
 
 	lastIndex := len(s.data) - 1
-	lastEntityID := s.denseToEntity[lastIndex]
+	lastEntityID := s.dense[lastIndex]
 
 	if idx != lastIndex {
 		s.data[idx] = s.data[lastIndex]
-		s.denseToEntity[idx] = lastEntityID
+		s.dense[idx] = lastEntityID
 		s.dirty[idx] = s.dirty[lastIndex]
 
-		s.entityToDense[lastEntityID] = idx
+		s.sparse[lastEntityID] = idx
 	}
 
 	s.data = s.data[:lastIndex]
-	s.denseToEntity = s.denseToEntity[:lastIndex]
+	s.dense = s.dense[:lastIndex]
 	s.dirty = s.dirty[:lastIndex]
 
-	delete(s.entityToDense, id)
+	delete(s.sparse, id)
 }
 
 func (s *Store[T]) GetEntities() []EntityID {
-	return s.denseToEntity
+	return s.dense
+}
+
+func (s *Store[T]) Entities() iter.Seq[EntityID] {
+	return func(yield func(EntityID) bool) {
+		for _, id := range s.dense {
+			if !yield(id) {
+				break
+			}
+		}
+	}
+}
+
+func (s *Store[T]) Len() int {
+	return len(s.dense)
 }
 
 func (s *Store[T]) HasEntity(id EntityID) bool {
-	_, ok := s.entityToDense[id]
+	_, ok := s.sparse[id]
 	return ok
 }
 
 func (s *Store[T]) Get(id EntityID) *T {
-	return &s.data[s.entityToDense[id]]
+	return &s.data[s.sparse[id]]
 }
 
 func (s *Store[T]) GetMutable(id EntityID) *T {
-	idx := s.entityToDense[id]
+	idx := s.sparse[id]
 	s.dirty[idx] = true
 	return &s.data[idx]
 }
 
 func (s *Store[T]) GetStatic(id EntityID) T {
-	return s.data[s.entityToDense[id]]
+	return s.data[s.sparse[id]]
+}
+
+func (s *Store[T]) MarkDirty(id EntityID) {
+	idx := s.sparse[id]
+	s.dirty[idx] = true
 }
 
 // ==================================================================
@@ -532,13 +622,12 @@ func SetupSystem(ctx SystemContext) {
 }
 
 func MovementSystem(ctx SystemContext) {
-	q := Query2[Position, Velocity](ctx.World)
-
 	gameSpeed := GetSingleton[GameSpeed](ctx.World)
+	q := SimpleQuery2[Position, Velocity](ctx.World)
 
-	for q.Next() {
-		pos := q.GetMutable1()
-		vel := q.Get2()
+	for row := range q {
+		pos := row.GetMutable1()
+		vel := row.Get2()
 
 		pos.X += vel.X * ctx.Dt * gameSpeed.Speed
 		pos.Y += vel.Y * ctx.Dt * gameSpeed.Speed
@@ -546,12 +635,11 @@ func MovementSystem(ctx SystemContext) {
 }
 
 func PrintPositionsSystem(ctx SystemContext) {
-	q := Query1[Position](ctx.World)
+	q := SimpleQuery1[Position](ctx.World)
 
-	for q.Next() {
-		e := q.GetEntity()
-		pos := q.GetStatic()
-		fmt.Println(e, pos)
+	for row := range q {
+		pos := row.GetStatic()
+		fmt.Println(row.ID, pos)
 	}
 }
 
