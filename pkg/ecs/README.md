@@ -10,6 +10,7 @@ to entities. Systems can query, mutate and process those components.
 
 ## Todos
 
-- Better System scheduling
+- Enhanced scheduling options
 - Query caching
 - Archetype storage
+- Dirty queries
