@@ -1,0 +1,58 @@
+package axium
+
+type AxiumConnection interface {
+	Close(int, string)
+	GetRemoteAddress() string
+}
+
+type AxiumTransport interface {
+	CloseClient(string, int, string) error
+	GetClientIds() []string
+	Send(string, []byte, bool) error
+	OnConnect(func(AxiumConnection, func(string), func(string)))
+	OnDisconnect(func(string))
+	OnMessage(func(string, []byte))
+	OnError(func(error))
+	Publish(string, []byte) error
+	Subscribe(string, string) error
+	Unsubscribe(string, string) error
+	CreateTopic(string) error
+	DeleteTopic(string) error
+	GetTopicIds() []string
+	GetClientIdsOfTopic(string) ([]string, error)
+	Close() error
+}
+
+type AxiumSerializer interface {
+	EncodeMessage(*Message) ([]byte, error)
+	DecodeMessage([]byte) (*Message, error)
+}
+
+type IdGenerator func() string
+
+type MessageHandler func(session *Session, data []byte)
+type MiddlewareHandler func(session *Session, data []byte) bool
+
+type RoomDefinition func(*Room)
+
+type MessageAction uint8
+
+const (
+	ReservedAction0 MessageAction = iota
+	ServerEventAction
+	RoomEventAction
+	ReservedAction3
+	ReservedAction4
+	ReservedAction5
+	ReservedAction6
+	ReservedAction7
+	ReservedAction8
+	ReservedAction9
+)
+
+type Message struct {
+	Action MessageAction
+	Event  string
+	Data   []byte
+	RoomId string
+}
