@@ -2,31 +2,43 @@ package ecs
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 )
 
-type ECS struct {
+type ECSPhase int
+
+const (
+	Registration ECSPhase = iota
+	Systems
+	Managed
+)
+
+type ECSEngine struct {
 	world     *World
 	scheduler *Scheduler
 
-	done chan struct{}
+	phase atomic.Int32
+
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
-func NewECS() *ECS {
-	return &ECS{
+func NewEngine() *ECSEngine {
+	return &ECSEngine{
 		world:     NewWorld(),
 		scheduler: NewScheduler(),
 		done:      make(chan struct{}),
 	}
 }
 
-type ECSOptions struct {
+type EngineOptions struct {
 	world     *World
 	scheduler *Scheduler
 }
 
-func NewECSWithOptions(options ECSOptions) *ECS {
-	ecs := &ECS{
+func NewEngineWithOptions(options EngineOptions) *ECSEngine {
+	ecs := &ECSEngine{
 		world:     options.world,
 		scheduler: options.scheduler,
 	}
@@ -46,33 +58,94 @@ func NewECSWithOptions(options ECSOptions) *ECS {
 // Registration
 // ==================================================================
 
-type ECSPlugin func(ecs *ECS)
+type ECSPlugin func(ecs *ECSEngine)
 
-func (ecs *ECS) RegisterPlugin(plugin ECSPlugin) {
+func (ecs *ECSEngine) RegisterPlugin(plugin ECSPlugin) {
 	plugin(ecs)
 }
 
-func (ecs *ECS) RegisterSystem(sys System, trigger SystemTrigger, reads, writes []Component) {
-	ecs.scheduler.AddSystem(sys, trigger, reads, writes)
+type SystemOption func(*SystemConfig)
+
+func Trigger(trigger SystemTrigger) SystemOption {
+	return func(config *SystemConfig) {
+		config.Trigger = trigger
+	}
 }
 
-func RegisterComp[T Component](ecs *ECS) {
-	RegisterComponent[T](ecs.world)
+func Reads(comps ...Component) SystemOption {
+	return func(config *SystemConfig) {
+		config.Reads = append(config.Reads, comps...)
+	}
 }
 
-func RegisterSing[T Component](ecs *ECS, initial T) {
-	RegisterSingleton[T](ecs.world, initial)
+func Writes(comps ...Component) SystemOption {
+	return func(config *SystemConfig) {
+		config.Writes = append(config.Writes, comps...)
+	}
 }
 
-func RegisterMess[T Component](ecs *ECS) {
-	RegisterMessage[T](ecs.world)
+func (ecs *ECSEngine) RegisterSystem(sys System, opts ...SystemOption) {
+	config := SystemConfig{
+		System: sys,
+	}
+
+	for _, opt := range opts {
+		opt(&config)
+	}
+
+	ecs.scheduler.AddSystem(config)
+}
+
+func RegisterComponent[T Component](ecs *ECSEngine) {
+	registerComponent[T](ecs.world)
+}
+
+func RegisterSingleton[T Component](ecs *ECSEngine, initial T) {
+	registerSingleton[T](ecs.world, initial)
+}
+
+func RegisterMessage[T Component](ecs *ECSEngine) {
+	registerMessage[T](ecs.world)
+}
+
+// ==================================================================
+// Global
+// ==================================================================
+
+func GetSingleton[T Component](w *World) *T {
+	return getSingleton[T](w)
+}
+
+func GetMutableSingleton[T Component](w *World) *T {
+	return getMutableSingleton[T](w)
+}
+
+func GetStaticSingleton[T Component](w *World) T {
+	return getStaticSingleton[T](w)
+}
+
+func PushMessage[T Component](w *World, msg T) {
+	pushMessage[T](w, msg)
+}
+
+func PushMessageSafe[T Component](ecs *ECSEngine, msg T) {
+	pushMessageSafe[T](ecs.world, msg)
+}
+
+func CollectMessages[T Component](w *World) []T {
+	return collectMessages[T](w)
 }
 
 // ==================================================================
 // Event Loop
 // ==================================================================
 
-func (ecs *ECS) Run(ctx context.Context, tickRate int) {
+func (ecs *ECSEngine) Run(ctx context.Context, tickRate int) {
+	ecs.phase.Store(int32(Systems))
+
+	ctx, cancel := context.WithCancel(ctx)
+	ecs.cancel = cancel
+
 	ecs.scheduler.Compile()
 	ecs.scheduler.RunInit(ecs.world)
 
@@ -90,10 +163,14 @@ func (ecs *ECS) Run(ctx context.Context, tickRate int) {
 	}
 }
 
-func (ecs *ECS) tick(dt float64) {
+func (ecs *ECSEngine) Close() {
+	ecs.cancel()
+}
+
+func (ecs *ECSEngine) tick(dt float64) {
 	ecs.scheduler.RunUpdate(ecs.world, dt)
 }
 
-func (ecs *ECS) Done() {
+func (ecs *ECSEngine) Wait() {
 	<-ecs.done
 }

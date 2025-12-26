@@ -41,29 +41,34 @@ func NewScheduler() *Scheduler {
 	}
 }
 
-func (s *Scheduler) AddSystem(
-	sys System,
-	trigger SystemTrigger,
-	reads, writes []Component,
-) {
+type SystemConfig struct {
+	System  System
+	Trigger SystemTrigger
+	Reads   []Component
+	Writes  []Component
+}
+
+func (s *Scheduler) AddSystem(config SystemConfig) {
 	node := &SystemNode{
 		reads:    make(map[ComponentID]struct{}),
 		writes:   make(map[ComponentID]struct{}),
-		runner:   sys,
+		runner:   config.System,
 		commands: &CommandBuffer{},
 	}
 
-	for _, c := range reads {
+	for _, c := range config.Reads {
 		node.reads[c.Id()] = struct{}{}
 	}
-	for _, c := range writes {
+	for _, c := range config.Reads {
 		node.writes[c.Id()] = struct{}{}
 	}
 
-	switch trigger {
+	switch config.Trigger {
 	case OnStartup:
 		s.initSystems = append(s.initSystems, node)
 	case OnUpdate:
+		s.systems = append(s.systems, node)
+	default:
 		s.systems = append(s.systems, node)
 	}
 }
@@ -241,7 +246,7 @@ func (cb *CommandBuffer) DestroyEntity(id EntityID) {
 	})
 }
 
-func AddField[T any](cb *CommandBuffer, id EntityID, initial T) {
+func AddComponent[T any](cb *CommandBuffer, id EntityID, initial T) {
 	t := reflect.TypeFor[T]()
 	cb.commands = append(cb.commands, Command{
 		Op:        AddComponentToEntity,
@@ -252,7 +257,7 @@ func AddField[T any](cb *CommandBuffer, id EntityID, initial T) {
 	})
 }
 
-func RemoveField[T any](cb *CommandBuffer, id EntityID) {
+func RemoveComponent[T any](cb *CommandBuffer, id EntityID) {
 	t := reflect.TypeFor[T]()
 	cb.commands = append(cb.commands, Command{
 		Op:        RemoveComponentFromEntity,

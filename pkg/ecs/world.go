@@ -3,10 +3,13 @@ package ecs
 import (
 	"iter"
 	"reflect"
+	"sync"
 )
 
 type EntityID uint64
 type ComponentID uint16
+
+type TypeID uint16
 
 type Component interface {
 	Id() ComponentID
@@ -42,9 +45,9 @@ func (w *World) processCommands(commands []Command) {
 		case DestroyEntityCommand:
 			w.destroyEntity(cmd.EntityId)
 		case AddComponentToEntity:
-			w.addField(cmd.EntityId, cmd.Type, cmd.Value)
+			w.addComponent(cmd.EntityId, cmd.Type, cmd.Value)
 		case RemoveComponentFromEntity:
-			w.removeField(cmd.EntityId, cmd.Type)
+			w.removeComponent(cmd.EntityId, cmd.Type)
 		}
 	}
 }
@@ -63,14 +66,14 @@ func (w *World) destroyEntity(id EntityID) {
 	}
 }
 
-func (w *World) addField(id EntityID, typ reflect.Type, initial any) {
+func (w *World) addComponent(id EntityID, typ reflect.Type, initial any) {
 	s, ok := w.stores[typ]
 	if ok {
 		s.Add(id, initial)
 	}
 }
 
-func (w *World) removeField(id EntityID, typ reflect.Type) {
+func (w *World) removeComponent(id EntityID, typ reflect.Type) {
 	s, ok := w.stores[typ]
 	if ok {
 		s.Remove(id)
@@ -86,26 +89,40 @@ type TypedMessageStore interface {
 }
 
 type MessageStore[T any] struct {
-	read  []T
-	write []T
+	read      []T
+	write     []T
+	writeSafe []T
+	mu        sync.Mutex // For writeSafe
 }
 
 func (s *MessageStore[T]) swap() {
-	s.read, s.write = s.write[:0], s.read
+	s.mu.Lock()
+	ws := s.writeSafe
+	s.writeSafe = s.writeSafe[:0]
+	s.mu.Unlock()
+
+	s.read = s.read[:0]
+
+	s.read = append(s.read, s.write...)
+	s.read = append(s.read, ws...)
+
+	s.write = s.write[:0]
+
 }
 
-func RegisterMessage[T Component](w *World) {
+func registerMessage[T Component](w *World) {
 	t := reflect.TypeFor[T]()
 
 	store := &MessageStore[T]{
-		read:  make([]T, 0),
-		write: make([]T, 0),
+		read:      make([]T, 0),
+		write:     make([]T, 0),
+		writeSafe: make([]T, 0),
 	}
 
 	w.messages[t] = store
 }
 
-func PushMessage[T any](w *World, msg T) {
+func pushMessage[T any](w *World, msg T) {
 	t := reflect.TypeFor[T]()
 
 	s, ok := w.messages[t]
@@ -119,7 +136,23 @@ func PushMessage[T any](w *World, msg T) {
 	}
 }
 
-func CollectMessages[T any](w *World) []T {
+func pushMessageSafe[T any](w *World, msg T) {
+	t := reflect.TypeFor[T]()
+
+	s, ok := w.messages[t]
+	if !ok {
+		return
+	}
+
+	store, ok := s.(*MessageStore[T])
+	if ok {
+		store.mu.Lock()
+		store.write = append(store.write, msg)
+		store.mu.Unlock()
+	}
+}
+
+func collectMessages[T any](w *World) []T {
 	t := reflect.TypeFor[T]()
 
 	s, ok := w.messages[t]
@@ -144,7 +177,7 @@ type SingletonStore[T any] struct {
 	dirty bool
 }
 
-func RegisterSingleton[T Component](w *World, initial T) {
+func registerSingleton[T Component](w *World, initial T) {
 	t := reflect.TypeFor[T]()
 
 	store := &SingletonStore[T]{
@@ -154,7 +187,7 @@ func RegisterSingleton[T Component](w *World, initial T) {
 	w.singletons[t] = store
 }
 
-func GetSingleton[T any](w *World) *T {
+func getSingleton[T any](w *World) *T {
 	t := reflect.TypeFor[T]()
 	s := w.singletons[t]
 
@@ -166,7 +199,7 @@ func GetSingleton[T any](w *World) *T {
 	return &store.data
 }
 
-func GetMutableSingleton[T any](w *World) *T {
+func getMutableSingleton[T any](w *World) *T {
 	t := reflect.TypeFor[T]()
 	s := w.singletons[t]
 
@@ -179,7 +212,7 @@ func GetMutableSingleton[T any](w *World) *T {
 	return &store.data
 }
 
-func GetStaticSingleton[T any](w *World) T {
+func getStaticSingleton[T any](w *World) T {
 	t := reflect.TypeFor[T]()
 	s := w.singletons[t]
 
@@ -196,7 +229,7 @@ func GetStaticSingleton[T any](w *World) T {
 // Components
 // ==================================================================
 
-func RegisterComponent[T Component](w *World) {
+func registerComponent[T Component](w *World) {
 	var z T
 	t := reflect.TypeOf(z)
 

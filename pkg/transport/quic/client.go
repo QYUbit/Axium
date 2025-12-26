@@ -19,12 +19,12 @@ var bufferPool = &sync.Pool{
 
 type client struct {
 	id     string
-	conn   quic.Connection
+	conn   *quic.Conn
 	send   chan outgoingMessage
 	closed atomic.Bool
 }
 
-func newClient(id string, conn quic.Connection) *client {
+func newClient(id string, conn *quic.Conn) *client {
 	return &client{
 		id:   id,
 		conn: conn,

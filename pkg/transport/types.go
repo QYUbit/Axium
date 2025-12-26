@@ -1,4 +1,4 @@
-// Package transport serves as a network abstraction at (not necessarily) transport level.
+// Package transport serves as an abstraction for bidirectional transports.
 package transport
 
 import "context"
@@ -13,10 +13,6 @@ type Connection struct {
 	RemoteAddr string
 }
 
-type IdGenerator func() string
-
-type ConnectionValidator func(remoteAddr string) (accept bool, reason string)
-
 type Transport interface {
 	Start(ctx context.Context) error
 	Close() error
@@ -28,6 +24,4 @@ type Transport interface {
 	Connections() <-chan Connection
 	Disconnections() <-chan string
 	Errors() <-chan error
-	SetIdGenerator(idGenerator IdGenerator)
-	SetValidator(validator ConnectionValidator)
 }

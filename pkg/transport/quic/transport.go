@@ -33,8 +33,8 @@ type QuicTransport struct {
 	messageChan    chan transport.Message
 	errorChan      chan error
 
-	idGenerator transport.IdGenerator
-	validator   transport.ConnectionValidator
+	idGenerator func() string
+	validator   func(remoteAddr string) (bool, string)
 
 	closed          atomic.Bool
 	closeOnce       sync.Once
@@ -227,7 +227,7 @@ func (t *QuicTransport) Close() error {
 	return lastError
 }
 
-func (t *QuicTransport) registerClient(clientId string, conn quic.Connection) error {
+func (t *QuicTransport) registerClient(clientId string, conn *quic.Conn) error {
 	if t.isClosed() {
 		return ErrTransportClosed
 	}
@@ -336,10 +336,10 @@ func (t *QuicTransport) Errors() <-chan error {
 	return t.errorChan
 }
 
-func (t *QuicTransport) SetIdGenerator(idGenerator transport.IdGenerator) {
+func (t *QuicTransport) SetIdGenerator(idGenerator func() string) {
 	t.idGenerator = idGenerator
 }
 
-func (t *QuicTransport) SetValidator(validator transport.ConnectionValidator) {
+func (t *QuicTransport) SetValidator(validator func(string) (bool, string)) {
 	t.validator = validator
 }

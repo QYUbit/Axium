@@ -24,8 +24,8 @@ func SetupSystem(ctx ecs.SystemContext) {
 	player := ecs.EntityID(0)
 	ctx.Commands.CreateEntity(player)
 
-	ecs.AddField(ctx.Commands, player, Position{})
-	ecs.AddField(ctx.Commands, player, Velocity{0, 1})
+	ecs.AddComponent(ctx.Commands, player, Position{})
+	ecs.AddComponent(ctx.Commands, player, Velocity{0, 1})
 }
 
 func MovementSystem(ctx ecs.SystemContext) {
@@ -50,43 +50,39 @@ func PrintPositionsSystem(ctx ecs.SystemContext) {
 	}
 }
 
-func MyGame(app *ecs.ECS) {
-	ecs.RegisterComp[Position](app)
-	ecs.RegisterComp[Velocity](app)
+func MyGame(engine *ecs.ECSEngine) {
+	ecs.RegisterComponent[Position](engine)
+	ecs.RegisterComponent[Velocity](engine)
 
-	ecs.RegisterSing[GameSpeed](app, GameSpeed{1})
+	ecs.RegisterSingleton[GameSpeed](engine, GameSpeed{1})
 
-	app.RegisterSystem(SetupSystem,
-		ecs.OnStartup,
-		nil,
-		[]ecs.Component{Position{}, Velocity{}},
+	engine.RegisterSystem(
+		SetupSystem,
+		ecs.Trigger(ecs.OnStartup),
 	)
 
-	app.RegisterSystem(
+	engine.RegisterSystem(
 		MovementSystem,
-		ecs.OnUpdate,
-		[]ecs.Component{Velocity{}, Position{}},
-		[]ecs.Component{Position{}},
+		ecs.Reads(Velocity{}, Position{}, GameSpeed{}),
+		ecs.Writes(Position{}),
 	)
 
-	app.RegisterSystem(
+	engine.RegisterSystem(
 		PrintPositionsSystem,
-		ecs.OnUpdate,
-		[]ecs.Component{Position{}},
-		nil,
+		ecs.Reads(Position{}),
 	)
 }
 
 func main() {
-	app := ecs.NewECS()
+	engine := ecs.NewEngine()
 
-	app.RegisterPlugin(MyGame)
+	engine.RegisterPlugin(MyGame)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func(ctx context.Context) {
-		app.Run(ctx, 60)
-		app.Done()
+		engine.Run(ctx, 60)
+		engine.Wait()
 	}(ctx)
 
 	time.Sleep(time.Second * 3)

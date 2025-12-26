@@ -1,0 +1,4 @@
+components:
+  - Position: 0
+  - Velocity: 1
+  - NetworkID: 2
