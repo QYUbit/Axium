@@ -28,8 +28,8 @@ type Scheduler struct {
 }
 
 type SystemNode struct {
-	reads    map[ComponentID]struct{}
-	writes   map[ComponentID]struct{}
+	reads    map[reflect.Type]struct{}
+	writes   map[reflect.Type]struct{}
 	runner   System
 	commands *CommandBuffer
 }
@@ -44,23 +44,16 @@ func NewScheduler() *Scheduler {
 type SystemConfig struct {
 	System  System
 	Trigger SystemTrigger
-	Reads   []Component
-	Writes  []Component
+	Reads   map[reflect.Type]struct{}
+	Writes  map[reflect.Type]struct{}
 }
 
 func (s *Scheduler) AddSystem(config SystemConfig) {
 	node := &SystemNode{
-		reads:    make(map[ComponentID]struct{}),
-		writes:   make(map[ComponentID]struct{}),
+		reads:    config.Reads,
+		writes:   config.Writes,
 		runner:   config.System,
 		commands: &CommandBuffer{},
-	}
-
-	for _, c := range config.Reads {
-		node.reads[c.Id()] = struct{}{}
-	}
-	for _, c := range config.Reads {
-		node.writes[c.Id()] = struct{}{}
 	}
 
 	switch config.Trigger {

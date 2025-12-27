@@ -1,8 +1,8 @@
 module github.com/QYUbit/Axium
 
-go 1.23
+go 1.25
 
-toolchain go1.23.8
+toolchain go1.25.5
 
 require github.com/google/uuid v1.6.0
 

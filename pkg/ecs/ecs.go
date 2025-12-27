@@ -2,6 +2,7 @@ package ecs
 
 import (
 	"context"
+	"reflect"
 	"sync/atomic"
 	"time"
 )
@@ -18,18 +19,20 @@ type ECSEngine struct {
 	world     *World
 	scheduler *Scheduler
 
-	phase atomic.Int32
+	canRegister atomic.Bool
 
 	cancel context.CancelFunc
 	done   chan struct{}
 }
 
 func NewEngine() *ECSEngine {
-	return &ECSEngine{
+	ecs := &ECSEngine{
 		world:     NewWorld(),
 		scheduler: NewScheduler(),
 		done:      make(chan struct{}),
 	}
+	ecs.canRegister.Store(true)
+	return ecs
 }
 
 type EngineOptions struct {
@@ -61,6 +64,9 @@ func NewEngineWithOptions(options EngineOptions) *ECSEngine {
 type ECSPlugin func(ecs *ECSEngine)
 
 func (ecs *ECSEngine) RegisterPlugin(plugin ECSPlugin) {
+	if !ecs.canRegister.Load() {
+		panic("ECS engine has already started")
+	}
 	plugin(ecs)
 }
 
@@ -72,21 +78,31 @@ func Trigger(trigger SystemTrigger) SystemOption {
 	}
 }
 
-func Reads(comps ...Component) SystemOption {
+func Reads(comps ...any) SystemOption {
 	return func(config *SystemConfig) {
-		config.Reads = append(config.Reads, comps...)
+		for _, comp := range comps {
+			config.Reads[reflect.TypeOf(comp)] = struct{}{}
+		}
 	}
 }
 
-func Writes(comps ...Component) SystemOption {
+func Writes(comps ...any) SystemOption {
 	return func(config *SystemConfig) {
-		config.Writes = append(config.Writes, comps...)
+		for _, comp := range comps {
+			config.Writes[reflect.TypeOf(comp)] = struct{}{}
+		}
 	}
 }
 
 func (ecs *ECSEngine) RegisterSystem(sys System, opts ...SystemOption) {
+	if !ecs.canRegister.Load() {
+		panic("ECS engine has already started")
+	}
+
 	config := SystemConfig{
 		System: sys,
+		Reads:  make(map[reflect.Type]struct{}),
+		Writes: make(map[reflect.Type]struct{}),
 	}
 
 	for _, opt := range opts {
@@ -96,15 +112,31 @@ func (ecs *ECSEngine) RegisterSystem(sys System, opts ...SystemOption) {
 	ecs.scheduler.AddSystem(config)
 }
 
-func RegisterComponent[T Component](ecs *ECSEngine) {
-	registerComponent[T](ecs.world)
+func RegisterComponent[T Component](ecs *ECSEngine, id uint16) {
+	if !ecs.canRegister.Load() {
+		panic("ECS engine has already started")
+	}
+	registerComponent[T](ecs.world, false, id)
+}
+
+func RegisterComponentAuto[T Component](ecs *ECSEngine) {
+	if !ecs.canRegister.Load() {
+		panic("ECS engine has already started")
+	}
+	registerComponent[T](ecs.world, true, 0)
 }
 
 func RegisterSingleton[T Component](ecs *ECSEngine, initial T) {
-	registerSingleton[T](ecs.world, initial)
+	if !ecs.canRegister.Load() {
+		panic("ECS engine has already started")
+	}
+	registerSingleton(ecs.world, initial)
 }
 
 func RegisterMessage[T Component](ecs *ECSEngine) {
+	if !ecs.canRegister.Load() {
+		panic("ECS engine has already started")
+	}
 	registerMessage[T](ecs.world)
 }
 
@@ -125,11 +157,11 @@ func GetStaticSingleton[T Component](w *World) T {
 }
 
 func PushMessage[T Component](w *World, msg T) {
-	pushMessage[T](w, msg)
+	pushMessage(w, msg)
 }
 
 func PushMessageSafe[T Component](ecs *ECSEngine, msg T) {
-	pushMessageSafe[T](ecs.world, msg)
+	pushMessageSafe(ecs.world, msg)
 }
 
 func CollectMessages[T Component](w *World) []T {
@@ -141,7 +173,7 @@ func CollectMessages[T Component](w *World) []T {
 // ==================================================================
 
 func (ecs *ECSEngine) Run(ctx context.Context, tickRate int) {
-	ecs.phase.Store(int32(Systems))
+	ecs.canRegister.Store(false)
 
 	ctx, cancel := context.WithCancel(ctx)
 	ecs.cancel = cancel

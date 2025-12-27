@@ -9,16 +9,9 @@ import (
 )
 
 type Position struct{ X, Y float64 }
-
-func (Position) Id() ecs.ComponentID { return 0 }
-
 type Velocity struct{ X, Y float64 }
 
-func (Velocity) Id() ecs.ComponentID { return 1 }
-
 type GameSpeed struct{ Speed float64 }
-
-func (GameSpeed) Id() ecs.ComponentID { return 1001 }
 
 func SetupSystem(ctx ecs.SystemContext) {
 	player := ecs.EntityID(0)
@@ -30,11 +23,11 @@ func SetupSystem(ctx ecs.SystemContext) {
 
 func MovementSystem(ctx ecs.SystemContext) {
 	gameSpeed := ecs.GetSingleton[GameSpeed](ctx.World)
-	q := ecs.SimpleQuery2[Position, Velocity](ctx.World)
+	q := ecs.Query2[Position, Velocity](ctx.World)
 
-	for row := range q {
-		pos := row.GetMutable1()
-		vel := row.Get2()
+	for row := range q.Iter() {
+		pos := row.C1
+		vel := row.C2
 
 		pos.X += vel.X * ctx.Dt * gameSpeed.Speed
 		pos.Y += vel.Y * ctx.Dt * gameSpeed.Speed
@@ -42,19 +35,18 @@ func MovementSystem(ctx ecs.SystemContext) {
 }
 
 func PrintPositionsSystem(ctx ecs.SystemContext) {
-	q := ecs.SimpleQuery1[Position](ctx.World)
+	q := ecs.Query1[Position](ctx.World)
 
-	for row := range q {
-		pos := row.GetStatic()
-		fmt.Printf("Entity %d at %v\n", row.ID, pos)
+	for row := range q.Iter() {
+		fmt.Printf("Entity %d at %v\n", row.ID, row.C)
 	}
 }
 
 func MyGame(engine *ecs.ECSEngine) {
-	ecs.RegisterComponent[Position](engine)
-	ecs.RegisterComponent[Velocity](engine)
+	ecs.RegisterComponent[Position](engine, 0)
+	ecs.RegisterComponent[Velocity](engine, 1)
 
-	ecs.RegisterSingleton[GameSpeed](engine, GameSpeed{1})
+	ecs.RegisterSingleton(engine, GameSpeed{1})
 
 	engine.RegisterSystem(
 		SetupSystem,

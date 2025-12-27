@@ -1,6 +1,7 @@
 package ecs
 
 import (
+	"fmt"
 	"iter"
 	"reflect"
 	"sync"
@@ -11,25 +12,25 @@ type ComponentID uint16
 
 type TypeID uint16
 
-type Component interface {
-	Id() ComponentID
-}
+type Component any
 
 type World struct {
-	entities   map[EntityID]struct{}
-	stores     map[reflect.Type]TypedStore
-	storesById map[ComponentID]TypedStore
-	singletons map[reflect.Type]any
-	messages   map[reflect.Type]TypedMessageStore
+	entities      map[EntityID]struct{}
+	stores        map[reflect.Type]TypedStore
+	storesById    map[ComponentID]TypedStore
+	singletons    map[reflect.Type]any
+	messages      map[reflect.Type]TypedMessageStore
+	autoComponent uint16
 }
 
 func NewWorld() *World {
 	return &World{
-		entities:   make(map[EntityID]struct{}),
-		stores:     make(map[reflect.Type]TypedStore),
-		storesById: make(map[ComponentID]TypedStore),
-		singletons: make(map[reflect.Type]any),
-		messages:   make(map[reflect.Type]TypedMessageStore),
+		entities:      make(map[EntityID]struct{}),
+		stores:        make(map[reflect.Type]TypedStore),
+		storesById:    make(map[ComponentID]TypedStore),
+		singletons:    make(map[reflect.Type]any),
+		messages:      make(map[reflect.Type]TypedMessageStore),
+		autoComponent: 10_000,
 	}
 }
 
@@ -229,9 +230,34 @@ func getStaticSingleton[T any](w *World) T {
 // Components
 // ==================================================================
 
-func registerComponent[T Component](w *World) {
+func (w *World) generateId(auto bool, id uint16) uint16 {
+	if !auto {
+		if s, ok := w.storesById[ComponentID(id)]; ok {
+			panic(fmt.Sprintf("Component with id %d already registered (%s)", id, s.Type()))
+		}
+		return id
+	}
+
+	var generated uint16
+	for range 30_000 {
+		generated = w.autoComponent
+		w.autoComponent++
+		if _, ok := w.storesById[ComponentID(generated)]; !ok {
+			return generated
+		}
+	}
+	return 0
+}
+
+func registerComponent[T Component](w *World, autoId bool, id uint16) {
 	var z T
 	t := reflect.TypeOf(z)
+
+	if _, ok := w.stores[t]; ok {
+		return
+	}
+
+	id = w.generateId(autoId, id)
 
 	s := &Store[T]{
 		typ:    t,
@@ -239,7 +265,7 @@ func registerComponent[T Component](w *World) {
 	}
 
 	w.stores[t] = s
-	w.storesById[z.Id()] = s
+	w.storesById[ComponentID(id)] = s
 }
 
 func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
@@ -254,6 +280,7 @@ func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
 }
 
 type TypedStore interface {
+	Type() reflect.Type
 	GetEntities() []EntityID
 	Entities() iter.Seq[EntityID]
 	HasEntity(id EntityID) bool
@@ -268,6 +295,10 @@ type Store[T any] struct {
 	dense  []EntityID
 	data   []T
 	dirty  []bool
+}
+
+func (s *Store[T]) Type() reflect.Type {
+	return s.typ
 }
 
 func (s *Store[T]) Add(id EntityID, value any) {
