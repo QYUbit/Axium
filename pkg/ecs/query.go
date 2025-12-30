@@ -13,16 +13,16 @@ import (
 type QueryConfig struct {
 	Required         map[reflect.Type]struct{}
 	Excluded         map[reflect.Type]struct{}
-	Entities         map[EntityID]struct{}
-	ExcludedEntities map[EntityID]struct{}
+	Entities         map[Entity]struct{}
+	ExcludedEntities map[Entity]struct{}
 }
 
 func buildQueryConfig(opts []QueryOption) QueryConfig {
 	config := QueryConfig{
 		Required:         make(map[reflect.Type]struct{}),
 		Excluded:         make(map[reflect.Type]struct{}),
-		Entities:         make(map[EntityID]struct{}),
-		ExcludedEntities: make(map[EntityID]struct{}),
+		Entities:         make(map[Entity]struct{}),
+		ExcludedEntities: make(map[Entity]struct{}),
 	}
 	for _, opt := range opts {
 		opt(&config)
@@ -48,7 +48,7 @@ func Exclude(comps ...any) QueryOption {
 	}
 }
 
-func Entities(entities ...EntityID) QueryOption {
+func Entities(entities ...Entity) QueryOption {
 	return func(config *QueryConfig) {
 		for _, e := range entities {
 			config.Entities[e] = struct{}{}
@@ -56,7 +56,7 @@ func Entities(entities ...EntityID) QueryOption {
 	}
 }
 
-func ExcludeEntities(entities ...EntityID) QueryOption {
+func ExcludeEntities(entities ...Entity) QueryOption {
 	return func(config *QueryConfig) {
 		for _, e := range entities {
 			config.ExcludedEntities[e] = struct{}{}
@@ -69,15 +69,15 @@ func ExcludeEntities(entities ...EntityID) QueryOption {
 // ==================================================================
 
 type entitySource interface {
-	Entities() iter.Seq[EntityID]
-	HasEntity(e EntityID) bool
+	Entities() iter.Seq[Entity]
+	HasEntity(e Entity) bool
 	Len() int
 }
 
-type entitySet map[EntityID]struct{}
+type entitySet map[Entity]struct{}
 
-func (set entitySet) Entities() iter.Seq[EntityID] {
-	return func(yield func(EntityID) bool) {
+func (set entitySet) Entities() iter.Seq[Entity] {
+	return func(yield func(Entity) bool) {
 		for e := range set {
 			if !yield(e) {
 				return
@@ -86,7 +86,7 @@ func (set entitySet) Entities() iter.Seq[EntityID] {
 	}
 }
 
-func (set entitySet) HasEntity(e EntityID) bool {
+func (set entitySet) HasEntity(e Entity) bool {
 	_, ok := set[e]
 	return ok
 }
@@ -106,7 +106,7 @@ func newQuery(w *World, config QueryConfig) *query {
 
 	// exclusions
 
-	if config.ExcludedEntities != nil {
+	if len(config.ExcludedEntities) > 0 {
 		q.exclusions = append(q.exclusions, entitySet(config.ExcludedEntities))
 	}
 
@@ -122,7 +122,7 @@ func newQuery(w *World, config QueryConfig) *query {
 
 	var requirements []entitySource
 
-	if config.Entities != nil {
+	if len(config.Entities) > 0 {
 		requirements = append(requirements, entitySet(config.Entities))
 	}
 
@@ -153,8 +153,8 @@ func newQuery(w *World, config QueryConfig) *query {
 	return q
 }
 
-func (q *query) iter() iter.Seq[EntityID] {
-	return func(yield func(EntityID) bool) {
+func (q *query) iter() iter.Seq[Entity] {
+	return func(yield func(Entity) bool) {
 		for e := range q.driver.Entities() {
 			match := true
 
@@ -191,7 +191,7 @@ func (q *query) iter() iter.Seq[EntityID] {
 
 type View1[T any] struct {
 	s     *Store[T]
-	it    iter.Seq[EntityID]
+	it    iter.Seq[Entity]
 	empty bool
 }
 
@@ -216,7 +216,7 @@ func Query1[T any](w *World, opts ...QueryOption) *View1[T] {
 }
 
 type Row1[T any] struct {
-	ID EntityID
+	ID Entity
 	C  *T
 }
 
@@ -242,7 +242,7 @@ func (v *View1[T]) Iter() iter.Seq[Row1[T]] {
 type View2[T1, T2 any] struct {
 	s1    *Store[T1]
 	s2    *Store[T2]
-	it    iter.Seq[EntityID]
+	it    iter.Seq[Entity]
 	empty bool
 }
 
@@ -273,7 +273,7 @@ func Query2[T1, T2 any](w *World, opts ...QueryOption) *View2[T1, T2] {
 }
 
 type Row2[T1, T2 any] struct {
-	ID EntityID
+	ID Entity
 	C1 *T1
 	C2 *T2
 }
@@ -302,7 +302,7 @@ type View3[T1, T2, T3 any] struct {
 	s1    *Store[T1]
 	s2    *Store[T2]
 	s3    *Store[T3]
-	it    iter.Seq[EntityID]
+	it    iter.Seq[Entity]
 	empty bool
 }
 
@@ -339,7 +339,7 @@ func Query3[T1, T2, T3 any](w *World, opts ...QueryOption) *View3[T1, T2, T3] {
 }
 
 type Row3[T1, T2, T3 any] struct {
-	ID EntityID
+	ID Entity
 	C1 *T1
 	C2 *T2
 	C3 *T3

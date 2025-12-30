@@ -14,11 +14,8 @@ type Velocity struct{ X, Y float64 }
 type GameSpeed struct{ Speed float64 }
 
 func SetupSystem(ctx ecs.SystemContext) {
-	player := ecs.EntityID(0)
-	ctx.Commands.CreateEntity(player)
-
-	ecs.AddComponent(ctx.Commands, player, Position{})
-	ecs.AddComponent(ctx.Commands, player, Velocity{0, 1})
+	player := ecs.Entity(0)
+	ctx.Commands.CreateEntity(player, Position{}, Velocity{1, 0})
 }
 
 func MovementSystem(ctx ecs.SystemContext) {
@@ -38,7 +35,7 @@ func PrintPositionsSystem(ctx ecs.SystemContext) {
 	q := ecs.Query1[Position](ctx.World)
 
 	for row := range q.Iter() {
-		fmt.Printf("Entity %d at %v\n", row.ID, row.C)
+		fmt.Printf("Entity %d at %v\n", row.ID, *row.C)
 	}
 }
 
@@ -70,14 +67,13 @@ func main() {
 
 	engine.RegisterPlugin(MyGame)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := context.Background()
 
 	go func(ctx context.Context) {
 		engine.Run(ctx, 60)
-		engine.Wait()
 	}(ctx)
 
 	time.Sleep(time.Second * 3)
 
-	cancel()
+	engine.Close()
 }

@@ -2,10 +2,11 @@ package ecs
 
 import (
 	"context"
-	"reflect"
 	"sync/atomic"
 	"time"
 )
+
+// TODO Phases
 
 type ECSPhase int
 
@@ -70,70 +71,35 @@ func (ecs *ECSEngine) RegisterPlugin(plugin ECSPlugin) {
 	plugin(ecs)
 }
 
-type SystemOption func(*SystemConfig)
-
-func Trigger(trigger SystemTrigger) SystemOption {
-	return func(config *SystemConfig) {
-		config.Trigger = trigger
-	}
-}
-
-func Reads(comps ...any) SystemOption {
-	return func(config *SystemConfig) {
-		for _, comp := range comps {
-			config.Reads[reflect.TypeOf(comp)] = struct{}{}
-		}
-	}
-}
-
-func Writes(comps ...any) SystemOption {
-	return func(config *SystemConfig) {
-		for _, comp := range comps {
-			config.Writes[reflect.TypeOf(comp)] = struct{}{}
-		}
-	}
-}
-
 func (ecs *ECSEngine) RegisterSystem(sys System, opts ...SystemOption) {
 	if !ecs.canRegister.Load() {
 		panic("ECS engine has already started")
 	}
-
-	config := SystemConfig{
-		System: sys,
-		Reads:  make(map[reflect.Type]struct{}),
-		Writes: make(map[reflect.Type]struct{}),
-	}
-
-	for _, opt := range opts {
-		opt(&config)
-	}
-
-	ecs.scheduler.AddSystem(config)
+	ecs.scheduler.AddSystem(sys, opts)
 }
 
-func RegisterComponent[T Component](ecs *ECSEngine, id uint16) {
+func RegisterComponent[T any](ecs *ECSEngine, id uint16) {
 	if !ecs.canRegister.Load() {
 		panic("ECS engine has already started")
 	}
 	registerComponent[T](ecs.world, false, id)
 }
 
-func RegisterComponentAuto[T Component](ecs *ECSEngine) {
+func RegisterComponentAuto[T any](ecs *ECSEngine) {
 	if !ecs.canRegister.Load() {
 		panic("ECS engine has already started")
 	}
 	registerComponent[T](ecs.world, true, 0)
 }
 
-func RegisterSingleton[T Component](ecs *ECSEngine, initial T) {
+func RegisterSingleton[T any](ecs *ECSEngine, initial T) {
 	if !ecs.canRegister.Load() {
 		panic("ECS engine has already started")
 	}
 	registerSingleton(ecs.world, initial)
 }
 
-func RegisterMessage[T Component](ecs *ECSEngine) {
+func RegisterMessage[T any](ecs *ECSEngine) {
 	if !ecs.canRegister.Load() {
 		panic("ECS engine has already started")
 	}
@@ -144,28 +110,36 @@ func RegisterMessage[T Component](ecs *ECSEngine) {
 // Global
 // ==================================================================
 
-func GetSingleton[T Component](w *World) *T {
+func Get[T any](w *World, e Entity) (*T, bool) {
+	s, ok := getStoreFromWorld[T](w)
+	if !ok {
+		return nil, false
+	}
+	ptr := s.Get(e)
+	if ptr == nil {
+		return nil, false
+	}
+	return ptr, true
+}
+
+func GetSingleton[T any](w *World) *T {
 	return getSingleton[T](w)
 }
 
-func GetMutableSingleton[T Component](w *World) *T {
-	return getMutableSingleton[T](w)
-}
-
-func GetStaticSingleton[T Component](w *World) T {
-	return getStaticSingleton[T](w)
-}
-
-func PushMessage[T Component](w *World, msg T) {
+func PushMessage[T any](w *World, msg T) {
 	pushMessage(w, msg)
 }
 
-func PushMessageSafe[T Component](ecs *ECSEngine, msg T) {
+func PushMessageSafe[T any](ecs *ECSEngine, msg T) {
 	pushMessageSafe(ecs.world, msg)
 }
 
-func CollectMessages[T Component](w *World) []T {
+func CollectMessages[T any](w *World) []T {
 	return collectMessages[T](w)
+}
+
+func CollectMessagesSafe[T any](w *World) []T {
+	return collectMessagesSafe[T](w)
 }
 
 // ==================================================================
@@ -197,12 +171,9 @@ func (ecs *ECSEngine) Run(ctx context.Context, tickRate int) {
 
 func (ecs *ECSEngine) Close() {
 	ecs.cancel()
+	<-ecs.done
 }
 
 func (ecs *ECSEngine) tick(dt float64) {
 	ecs.scheduler.RunUpdate(ecs.world, dt)
-}
-
-func (ecs *ECSEngine) Wait() {
-	<-ecs.done
 }

@@ -7,17 +7,12 @@ import (
 	"sync"
 )
 
-type EntityID uint64
-type ComponentID uint16
-
-type TypeID uint16
-
-type Component any
+type Entity uint64
 
 type World struct {
-	entities      map[EntityID]struct{}
+	entities      map[Entity]struct{}
 	stores        map[reflect.Type]TypedStore
-	storesById    map[ComponentID]TypedStore
+	storesById    map[uint16]TypedStore
 	singletons    map[reflect.Type]any
 	messages      map[reflect.Type]TypedMessageStore
 	autoComponent uint16
@@ -25,9 +20,9 @@ type World struct {
 
 func NewWorld() *World {
 	return &World{
-		entities:      make(map[EntityID]struct{}),
+		entities:      make(map[Entity]struct{}),
 		stores:        make(map[reflect.Type]TypedStore),
-		storesById:    make(map[ComponentID]TypedStore),
+		storesById:    make(map[uint16]TypedStore),
 		singletons:    make(map[reflect.Type]any),
 		messages:      make(map[reflect.Type]TypedMessageStore),
 		autoComponent: 10_000,
@@ -42,42 +37,45 @@ func (w *World) processCommands(commands []Command) {
 	for _, cmd := range commands {
 		switch cmd.Op {
 		case CreateEntityCommand:
-			w.createEntity(cmd.EntityId)
+			w.createEntity(cmd.Entity, cmd.Values)
 		case DestroyEntityCommand:
-			w.destroyEntity(cmd.EntityId)
+			w.destroyEntity(cmd.Entity)
 		case AddComponentToEntity:
-			w.addComponent(cmd.EntityId, cmd.Type, cmd.Value)
+			w.addComponent(cmd.Entity, cmd.Type, cmd.Value)
 		case RemoveComponentFromEntity:
-			w.removeComponent(cmd.EntityId, cmd.Type)
+			w.removeComponent(cmd.Entity, cmd.Type)
 		}
 	}
 }
 
-func (w *World) createEntity(id EntityID) {
-	w.entities[id] = struct{}{}
+func (w *World) createEntity(e Entity, values map[reflect.Type]any) {
+	w.entities[e] = struct{}{}
+	for t, v := range values {
+		w.addComponent(e, t, v)
+	}
 }
 
-func (w *World) destroyEntity(id EntityID) {
-	delete(w.entities, id)
+func (w *World) destroyEntity(e Entity) {
+	delete(w.entities, e)
 
 	for _, store := range w.stores {
-		if store.HasEntity(id) {
-			store.Remove(id)
+		if store.HasEntity(e) {
+			store.Remove(e)
 		}
 	}
 }
 
-func (w *World) addComponent(id EntityID, typ reflect.Type, initial any) {
+func (w *World) addComponent(e Entity, typ reflect.Type, initial any) {
 	s, ok := w.stores[typ]
 	if ok {
-		s.Add(id, initial)
+		s.Add(e, initial)
 	}
 }
 
-func (w *World) removeComponent(id EntityID, typ reflect.Type) {
+func (w *World) removeComponent(e Entity, typ reflect.Type) {
 	s, ok := w.stores[typ]
 	if ok {
-		s.Remove(id)
+		s.Remove(e)
 	}
 }
 
@@ -93,14 +91,13 @@ type MessageStore[T any] struct {
 	read      []T
 	write     []T
 	writeSafe []T
-	mu        sync.Mutex // For writeSafe
+	mu        sync.Mutex // For swap
 }
 
 func (s *MessageStore[T]) swap() {
 	s.mu.Lock()
 	ws := s.writeSafe
 	s.writeSafe = s.writeSafe[:0]
-	s.mu.Unlock()
 
 	s.read = s.read[:0]
 
@@ -108,10 +105,10 @@ func (s *MessageStore[T]) swap() {
 	s.read = append(s.read, ws...)
 
 	s.write = s.write[:0]
-
+	s.mu.Unlock()
 }
 
-func registerMessage[T Component](w *World) {
+func registerMessage[T any](w *World) {
 	t := reflect.TypeFor[T]()
 
 	store := &MessageStore[T]{
@@ -169,6 +166,24 @@ func collectMessages[T any](w *World) []T {
 	return store.read
 }
 
+func collectMessagesSafe[T any](w *World) []T {
+	t := reflect.TypeFor[T]()
+
+	s, ok := w.messages[t]
+	if !ok {
+		return nil
+	}
+
+	store, ok := s.(*MessageStore[T])
+	if !ok {
+		return nil
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.read
+}
+
 // ==================================================================
 // Singletons
 // ==================================================================
@@ -178,7 +193,7 @@ type SingletonStore[T any] struct {
 	dirty bool
 }
 
-func registerSingleton[T Component](w *World, initial T) {
+func registerSingleton[T any](w *World, initial T) {
 	t := reflect.TypeFor[T]()
 
 	store := &SingletonStore[T]{
@@ -200,39 +215,13 @@ func getSingleton[T any](w *World) *T {
 	return &store.data
 }
 
-func getMutableSingleton[T any](w *World) *T {
-	t := reflect.TypeFor[T]()
-	s := w.singletons[t]
-
-	store, ok := s.(*SingletonStore[T])
-	if !ok {
-		return nil
-	}
-
-	store.dirty = true
-	return &store.data
-}
-
-func getStaticSingleton[T any](w *World) T {
-	t := reflect.TypeFor[T]()
-	s := w.singletons[t]
-
-	store, ok := s.(*SingletonStore[T])
-	if !ok {
-		var zero T
-		return zero
-	}
-
-	return store.data
-}
-
 // ==================================================================
 // Components
 // ==================================================================
 
 func (w *World) generateId(auto bool, id uint16) uint16 {
 	if !auto {
-		if s, ok := w.storesById[ComponentID(id)]; ok {
+		if s, ok := w.storesById[id]; ok {
 			panic(fmt.Sprintf("Component with id %d already registered (%s)", id, s.Type()))
 		}
 		return id
@@ -242,14 +231,14 @@ func (w *World) generateId(auto bool, id uint16) uint16 {
 	for range 30_000 {
 		generated = w.autoComponent
 		w.autoComponent++
-		if _, ok := w.storesById[ComponentID(generated)]; !ok {
+		if _, ok := w.storesById[generated]; !ok {
 			return generated
 		}
 	}
 	return 0
 }
 
-func registerComponent[T Component](w *World, autoId bool, id uint16) {
+func registerComponent[T any](w *World, autoId bool, id uint16) {
 	var z T
 	t := reflect.TypeOf(z)
 
@@ -260,12 +249,13 @@ func registerComponent[T Component](w *World, autoId bool, id uint16) {
 	id = w.generateId(autoId, id)
 
 	s := &Store[T]{
+		id:     id,
 		typ:    t,
-		sparse: make(map[EntityID]int),
+		sparse: make(map[Entity]int),
 	}
 
 	w.stores[t] = s
-	w.storesById[ComponentID(id)] = s
+	w.storesById[id] = s
 }
 
 func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
@@ -279,30 +269,47 @@ func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
 	return store, ok
 }
 
+func GetDirtyComponents[T any](w *World) (map[Entity]T, bool) {
+	s, ok := getStoreFromWorld[T](w)
+	if !ok {
+		return nil, false
+	}
+	return s.getDirtyComps(), true
+}
+
 type TypedStore interface {
 	Type() reflect.Type
-	GetEntities() []EntityID
-	Entities() iter.Seq[EntityID]
-	HasEntity(id EntityID) bool
-	Add(id EntityID, value any)
-	Remove(id EntityID)
+	Entities() iter.Seq[Entity]
+	HasEntity(e Entity) bool
+	Add(e Entity, value any)
+	Remove(e Entity)
 	Len() int
 }
 
 type Store[T any] struct {
+	id     uint16
 	typ    reflect.Type
-	sparse map[EntityID]int
-	dense  []EntityID
+	sparse map[Entity]int
+	dense  []Entity
 	data   []T
-	dirty  []bool
+	dirty  map[Entity]struct{}
+}
+
+func (s Store[T]) String() string {
+	return fmt.Sprintf(
+		"ComponentStore{typ:%s id:%d, len:%d}",
+		s.typ,
+		s.id,
+		len(s.dense),
+	)
 }
 
 func (s *Store[T]) Type() reflect.Type {
 	return s.typ
 }
 
-func (s *Store[T]) Add(id EntityID, value any) {
-	if s.HasEntity(id) {
+func (s *Store[T]) Add(e Entity, value any) {
+	if s.HasEntity(e) {
 		return
 	}
 
@@ -314,15 +321,13 @@ func (s *Store[T]) Add(id EntityID, value any) {
 	newIndex := len(s.data)
 
 	s.data = append(s.data, initial)
-	s.dense = append(s.dense, id)
+	s.dense = append(s.dense, e)
 
-	s.dirty = append(s.dirty, false)
-
-	s.sparse[id] = newIndex
+	s.sparse[e] = newIndex
 }
 
-func (s *Store[T]) Remove(id EntityID) {
-	idx, exists := s.sparse[id]
+func (s *Store[T]) Remove(e Entity) {
+	idx, exists := s.sparse[e]
 	if !exists {
 		return
 	}
@@ -333,56 +338,47 @@ func (s *Store[T]) Remove(id EntityID) {
 	if idx != lastIndex {
 		s.data[idx] = s.data[lastIndex]
 		s.dense[idx] = lastEntityID
-		s.dirty[idx] = s.dirty[lastIndex]
 
 		s.sparse[lastEntityID] = idx
 	}
 
 	s.data = s.data[:lastIndex]
 	s.dense = s.dense[:lastIndex]
-	s.dirty = s.dirty[:lastIndex]
 
-	delete(s.sparse, id)
-}
-
-func (s *Store[T]) GetEntities() []EntityID {
-	return s.dense
-}
-
-func (s *Store[T]) Entities() iter.Seq[EntityID] {
-	return func(yield func(EntityID) bool) {
-		for _, id := range s.dense {
-			if !yield(id) {
-				break
-			}
-		}
-	}
+	delete(s.sparse, e)
 }
 
 func (s *Store[T]) Len() int {
 	return len(s.dense)
 }
 
-func (s *Store[T]) HasEntity(id EntityID) bool {
-	_, ok := s.sparse[id]
+func (s *Store[T]) Entities() iter.Seq[Entity] {
+	return func(yield func(Entity) bool) {
+		for _, e := range s.dense {
+			if !yield(e) {
+				break
+			}
+		}
+	}
+}
+
+func (s *Store[T]) HasEntity(e Entity) bool {
+	_, ok := s.sparse[e]
 	return ok
 }
 
-func (s *Store[T]) Get(id EntityID) *T {
-	return &s.data[s.sparse[id]]
+func (s *Store[T]) Get(e Entity) *T {
+	return &s.data[s.sparse[e]]
 }
 
-func (s *Store[T]) GetMutable(id EntityID) *T {
-	idx := s.sparse[id]
-	s.dirty[idx] = true
-	return &s.data[idx]
-}
-
-func (s *Store[T]) GetStatic(id EntityID) T {
-	return s.data[s.sparse[id]]
-}
-
-func (s *Store[T]) MarkDirty(id EntityID) {
-	idx := s.sparse[id]
-	s.dirty[idx] = true
+func (s *Store[T]) getDirtyComps() map[Entity]T {
+	comps := make(map[Entity]T)
+	for e := range s.dirty {
+		idx, ok := s.sparse[e]
+		if !ok {
+			continue
+		}
+		comps[e] = s.data[idx]
+	}
+	return comps
 }

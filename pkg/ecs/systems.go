@@ -11,6 +11,7 @@ type SystemTrigger int
 const (
 	OnStartup SystemTrigger = iota
 	OnUpdate
+	OnEndOfTick
 )
 
 type System func(ctx SystemContext)
@@ -25,6 +26,7 @@ type Scheduler struct {
 	initSystems []*SystemNode
 	systems     []*SystemNode
 	batches     [][]*SystemNode
+	endSystems  []*SystemNode
 }
 
 type SystemNode struct {
@@ -38,6 +40,7 @@ func NewScheduler() *Scheduler {
 	return &Scheduler{
 		initSystems: make([]*SystemNode, 0),
 		systems:     make([]*SystemNode, 0),
+		endSystems:  make([]*SystemNode, 0),
 	}
 }
 
@@ -48,7 +51,48 @@ type SystemConfig struct {
 	Writes  map[reflect.Type]struct{}
 }
 
-func (s *Scheduler) AddSystem(config SystemConfig) {
+func buildSystemConfig(sys System, opts []SystemOption) SystemConfig {
+	config := SystemConfig{
+		System:  sys,
+		Reads:   make(map[reflect.Type]struct{}),
+		Writes:  make(map[reflect.Type]struct{}),
+		Trigger: -1,
+	}
+
+	for _, opt := range opts {
+		opt(&config)
+	}
+
+	return config
+}
+
+type SystemOption func(*SystemConfig)
+
+func Trigger(trigger SystemTrigger) SystemOption {
+	return func(config *SystemConfig) {
+		config.Trigger = trigger
+	}
+}
+
+func Reads(comps ...any) SystemOption {
+	return func(config *SystemConfig) {
+		for _, comp := range comps {
+			config.Reads[reflect.TypeOf(comp)] = struct{}{}
+		}
+	}
+}
+
+func Writes(comps ...any) SystemOption {
+	return func(config *SystemConfig) {
+		for _, comp := range comps {
+			config.Writes[reflect.TypeOf(comp)] = struct{}{}
+		}
+	}
+}
+
+func (s *Scheduler) AddSystem(sys System, opts []SystemOption) {
+	config := buildSystemConfig(sys, opts)
+
 	node := &SystemNode{
 		reads:    config.Reads,
 		writes:   config.Writes,
@@ -59,6 +103,8 @@ func (s *Scheduler) AddSystem(config SystemConfig) {
 	switch config.Trigger {
 	case OnStartup:
 		s.initSystems = append(s.initSystems, node)
+	case OnEndOfTick:
+		s.endSystems = append(s.endSystems, node)
 	case OnUpdate:
 		s.systems = append(s.systems, node)
 	default:
@@ -153,6 +199,16 @@ func (s *Scheduler) RunUpdate(w *World, dt float64) {
 		sys.commands.Reset()
 	}
 
+	for _, sys := range s.endSystems {
+		sys.runner(SystemContext{
+			World: w,
+			Dt:    dt,
+			Commands: &CommandBuffer{
+				commands: commands,
+			},
+		})
+	}
+
 	w.processCommands(commands)
 
 	for _, msgStore := range w.messages {
@@ -167,12 +223,15 @@ func (s *Scheduler) executeBatch(w *World, dt float64, batch []*SystemNode) {
 			Dt:       dt,
 			Commands: batch[0].commands,
 		}
+
 		batch[0].runner(ctx)
 		return
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(len(batch))
+
+	// TODO Work stealing
 
 	for _, sys := range batch {
 		go func(node *SystemNode) {
@@ -205,9 +264,10 @@ const (
 
 type Command struct {
 	Op        CommandOperation
-	EntityId  EntityID
+	Entity    Entity
 	Type      reflect.Type
 	Value     any
+	Values    map[reflect.Type]any
 	Timestamp int64
 }
 
@@ -223,38 +283,44 @@ func (cb *CommandBuffer) GetCommands() []Command {
 	return cb.commands
 }
 
-func (cb *CommandBuffer) CreateEntity(id EntityID) {
+func (cb *CommandBuffer) CreateEntity(e Entity, initial ...any) {
+	values := make(map[reflect.Type]any)
+	for _, v := range initial {
+		values[reflect.TypeOf(v)] = v
+	}
+
 	cb.commands = append(cb.commands, Command{
 		Op:        CreateEntityCommand,
-		EntityId:  id,
+		Entity:    e,
+		Values:    values,
 		Timestamp: time.Now().UnixNano(),
 	})
 }
 
-func (cb *CommandBuffer) DestroyEntity(id EntityID) {
+func (cb *CommandBuffer) DestroyEntity(e Entity) {
 	cb.commands = append(cb.commands, Command{
 		Op:        DestroyEntityCommand,
-		EntityId:  id,
+		Entity:    e,
 		Timestamp: time.Now().UnixNano(),
 	})
 }
 
-func AddComponent[T any](cb *CommandBuffer, id EntityID, initial T) {
+func AddComponent[T any](cb *CommandBuffer, e Entity, initial T) {
 	t := reflect.TypeFor[T]()
 	cb.commands = append(cb.commands, Command{
 		Op:        AddComponentToEntity,
-		EntityId:  id,
+		Entity:    e,
 		Type:      t,
 		Value:     initial, // ! Boxing
 		Timestamp: time.Now().UnixNano(),
 	})
 }
 
-func RemoveComponent[T any](cb *CommandBuffer, id EntityID) {
+func RemoveComponent[T any](cb *CommandBuffer, e Entity) {
 	t := reflect.TypeFor[T]()
 	cb.commands = append(cb.commands, Command{
 		Op:        RemoveComponentFromEntity,
-		EntityId:  id,
+		Entity:    e,
 		Type:      t,
 		Timestamp: time.Now().UnixNano(),
 	})
