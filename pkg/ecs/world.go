@@ -7,24 +7,27 @@ import (
 	"sync"
 )
 
+// Entity represents an ECS entity.
 type Entity uint64
 
+// World contains the state of an ECSEngine.
 type World struct {
 	entities      map[Entity]struct{}
-	stores        map[reflect.Type]TypedStore
-	storesById    map[uint16]TypedStore
+	stores        map[reflect.Type]typedStore
+	storesById    map[uint16]typedStore
 	singletons    map[reflect.Type]any
-	messages      map[reflect.Type]TypedMessageStore
+	messages      map[reflect.Type]typedMessageStore
 	autoComponent uint16
 }
 
+// NewWorld creates a new World.
 func NewWorld() *World {
 	return &World{
 		entities:      make(map[Entity]struct{}),
-		stores:        make(map[reflect.Type]TypedStore),
-		storesById:    make(map[uint16]TypedStore),
+		stores:        make(map[reflect.Type]typedStore),
+		storesById:    make(map[uint16]typedStore),
 		singletons:    make(map[reflect.Type]any),
-		messages:      make(map[reflect.Type]TypedMessageStore),
+		messages:      make(map[reflect.Type]typedMessageStore),
 		autoComponent: 10_000,
 	}
 }
@@ -83,18 +86,18 @@ func (w *World) removeComponent(e Entity, typ reflect.Type) {
 // Messages
 // ==================================================================
 
-type TypedMessageStore interface {
+type typedMessageStore interface {
 	swap()
 }
 
-type MessageStore[T any] struct {
+type messageStore[T any] struct {
 	read      []T
 	write     []T
 	writeSafe []T
 	mu        sync.Mutex // For swap
 }
 
-func (s *MessageStore[T]) swap() {
+func (s *messageStore[T]) swap() {
 	s.mu.Lock()
 	ws := s.writeSafe
 	s.writeSafe = s.writeSafe[:0]
@@ -111,7 +114,7 @@ func (s *MessageStore[T]) swap() {
 func registerMessage[T any](w *World) {
 	t := reflect.TypeFor[T]()
 
-	store := &MessageStore[T]{
+	store := &messageStore[T]{
 		read:      make([]T, 0),
 		write:     make([]T, 0),
 		writeSafe: make([]T, 0),
@@ -128,7 +131,7 @@ func pushMessage[T any](w *World, msg T) {
 		return
 	}
 
-	store, ok := s.(*MessageStore[T])
+	store, ok := s.(*messageStore[T])
 	if ok {
 		store.write = append(store.write, msg)
 	}
@@ -142,7 +145,7 @@ func pushMessageSafe[T any](w *World, msg T) {
 		return
 	}
 
-	store, ok := s.(*MessageStore[T])
+	store, ok := s.(*messageStore[T])
 	if ok {
 		store.mu.Lock()
 		store.write = append(store.write, msg)
@@ -158,7 +161,7 @@ func collectMessages[T any](w *World) []T {
 		return nil
 	}
 
-	store, ok := s.(*MessageStore[T])
+	store, ok := s.(*messageStore[T])
 	if !ok {
 		return nil
 	}
@@ -174,7 +177,7 @@ func collectMessagesSafe[T any](w *World) []T {
 		return nil
 	}
 
-	store, ok := s.(*MessageStore[T])
+	store, ok := s.(*messageStore[T])
 	if !ok {
 		return nil
 	}
@@ -188,7 +191,7 @@ func collectMessagesSafe[T any](w *World) []T {
 // Singletons
 // ==================================================================
 
-type SingletonStore[T any] struct {
+type singletonStore[T any] struct {
 	data  T
 	dirty bool
 }
@@ -196,7 +199,7 @@ type SingletonStore[T any] struct {
 func registerSingleton[T any](w *World, initial T) {
 	t := reflect.TypeFor[T]()
 
-	store := &SingletonStore[T]{
+	store := &singletonStore[T]{
 		data: initial,
 	}
 
@@ -207,7 +210,7 @@ func getSingleton[T any](w *World) *T {
 	t := reflect.TypeFor[T]()
 	s := w.singletons[t]
 
-	store, ok := s.(*SingletonStore[T])
+	store, ok := s.(*singletonStore[T])
 	if !ok {
 		return nil
 	}
@@ -248,7 +251,7 @@ func registerComponent[T any](w *World, autoId bool, id uint16) {
 
 	id = w.generateId(autoId, id)
 
-	s := &Store[T]{
+	s := &store[T]{
 		id:     id,
 		typ:    t,
 		sparse: make(map[Entity]int),
@@ -258,26 +261,18 @@ func registerComponent[T any](w *World, autoId bool, id uint16) {
 	w.storesById[id] = s
 }
 
-func getStoreFromWorld[T any](w *World) (*Store[T], bool) {
+func getStoreFromWorld[T any](w *World) (*store[T], bool) {
 	t := reflect.TypeFor[T]()
 
 	s, ok := w.stores[t]
 	if !ok {
 		return nil, false
 	}
-	store, ok := s.(*Store[T])
+	store, ok := s.(*store[T])
 	return store, ok
 }
 
-func GetDirtyComponents[T any](w *World) (map[Entity]T, bool) {
-	s, ok := getStoreFromWorld[T](w)
-	if !ok {
-		return nil, false
-	}
-	return s.getDirtyComps(), true
-}
-
-type TypedStore interface {
+type typedStore interface {
 	Type() reflect.Type
 	Entities() iter.Seq[Entity]
 	HasEntity(e Entity) bool
@@ -286,7 +281,7 @@ type TypedStore interface {
 	Len() int
 }
 
-type Store[T any] struct {
+type store[T any] struct {
 	id     uint16
 	typ    reflect.Type
 	sparse map[Entity]int
@@ -295,7 +290,7 @@ type Store[T any] struct {
 	dirty  map[Entity]struct{}
 }
 
-func (s Store[T]) String() string {
+func (s store[T]) String() string {
 	return fmt.Sprintf(
 		"ComponentStore{typ:%s id:%d, len:%d}",
 		s.typ,
@@ -304,11 +299,11 @@ func (s Store[T]) String() string {
 	)
 }
 
-func (s *Store[T]) Type() reflect.Type {
+func (s *store[T]) Type() reflect.Type {
 	return s.typ
 }
 
-func (s *Store[T]) Add(e Entity, value any) {
+func (s *store[T]) Add(e Entity, value any) {
 	if s.HasEntity(e) {
 		return
 	}
@@ -326,7 +321,7 @@ func (s *Store[T]) Add(e Entity, value any) {
 	s.sparse[e] = newIndex
 }
 
-func (s *Store[T]) Remove(e Entity) {
+func (s *store[T]) Remove(e Entity) {
 	idx, exists := s.sparse[e]
 	if !exists {
 		return
@@ -348,11 +343,11 @@ func (s *Store[T]) Remove(e Entity) {
 	delete(s.sparse, e)
 }
 
-func (s *Store[T]) Len() int {
+func (s *store[T]) Len() int {
 	return len(s.dense)
 }
 
-func (s *Store[T]) Entities() iter.Seq[Entity] {
+func (s *store[T]) Entities() iter.Seq[Entity] {
 	return func(yield func(Entity) bool) {
 		for _, e := range s.dense {
 			if !yield(e) {
@@ -362,16 +357,16 @@ func (s *Store[T]) Entities() iter.Seq[Entity] {
 	}
 }
 
-func (s *Store[T]) HasEntity(e Entity) bool {
+func (s *store[T]) HasEntity(e Entity) bool {
 	_, ok := s.sparse[e]
 	return ok
 }
 
-func (s *Store[T]) Get(e Entity) *T {
+func (s *store[T]) Get(e Entity) *T {
 	return &s.data[s.sparse[e]]
 }
 
-func (s *Store[T]) getDirtyComps() map[Entity]T {
+func (s *store[T]) getDirtyComps() map[Entity]T {
 	comps := make(map[Entity]T)
 	for e := range s.dirty {
 		idx, ok := s.sparse[e]

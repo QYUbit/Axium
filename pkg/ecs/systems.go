@@ -14,7 +14,11 @@ const (
 	OnEndOfTick
 )
 
-type System func(ctx SystemContext)
+type SystemFunc func(ctx SystemContext)
+
+type System interface {
+	Run(ctx SystemContext)
+}
 
 type SystemContext struct {
 	*World
@@ -23,35 +27,35 @@ type SystemContext struct {
 }
 
 type Scheduler struct {
-	initSystems []*SystemNode
-	systems     []*SystemNode
-	batches     [][]*SystemNode
-	endSystems  []*SystemNode
+	initSystems []*systemNode
+	systems     []*systemNode
+	batches     [][]*systemNode
+	endSystems  []*systemNode
 }
 
-type SystemNode struct {
+type systemNode struct {
 	reads    map[reflect.Type]struct{}
 	writes   map[reflect.Type]struct{}
-	runner   System
+	runner   SystemFunc
 	commands *CommandBuffer
 }
 
 func NewScheduler() *Scheduler {
 	return &Scheduler{
-		initSystems: make([]*SystemNode, 0),
-		systems:     make([]*SystemNode, 0),
-		endSystems:  make([]*SystemNode, 0),
+		initSystems: make([]*systemNode, 0),
+		systems:     make([]*systemNode, 0),
+		endSystems:  make([]*systemNode, 0),
 	}
 }
 
 type SystemConfig struct {
-	System  System
+	System  SystemFunc
 	Trigger SystemTrigger
 	Reads   map[reflect.Type]struct{}
 	Writes  map[reflect.Type]struct{}
 }
 
-func buildSystemConfig(sys System, opts []SystemOption) SystemConfig {
+func buildSystemConfig(sys SystemFunc, opts []SystemOption) SystemConfig {
 	config := SystemConfig{
 		System:  sys,
 		Reads:   make(map[reflect.Type]struct{}),
@@ -90,10 +94,32 @@ func Writes(comps ...any) SystemOption {
 	}
 }
 
-func (s *Scheduler) AddSystem(sys System, opts []SystemOption) {
+func (s *Scheduler) AddSystemFunc(sys SystemFunc, opts []SystemOption) {
 	config := buildSystemConfig(sys, opts)
 
-	node := &SystemNode{
+	node := &systemNode{
+		reads:    config.Reads,
+		writes:   config.Writes,
+		runner:   config.System,
+		commands: &CommandBuffer{},
+	}
+
+	switch config.Trigger {
+	case OnStartup:
+		s.initSystems = append(s.initSystems, node)
+	case OnEndOfTick:
+		s.endSystems = append(s.endSystems, node)
+	case OnUpdate:
+		s.systems = append(s.systems, node)
+	default:
+		s.systems = append(s.systems, node)
+	}
+}
+
+func (s *Scheduler) AddSystem(sys System, opts []SystemOption) {
+	config := buildSystemConfig(sys.Run, opts)
+
+	node := &systemNode{
 		reads:    config.Reads,
 		writes:   config.Writes,
 		runner:   config.System,
@@ -116,14 +142,14 @@ func (s *Scheduler) Compile() {
 	s.batches = s.computeBatches(s.systems)
 }
 
-func (s *Scheduler) computeBatches(systems []*SystemNode) [][]*SystemNode {
-	var batches [][]*SystemNode
-	remaining := make([]*SystemNode, len(systems))
+func (s *Scheduler) computeBatches(systems []*systemNode) [][]*systemNode {
+	var batches [][]*systemNode
+	remaining := make([]*systemNode, len(systems))
 	copy(remaining, systems)
 
 	for len(remaining) > 0 {
-		var currentBatch []*SystemNode
-		var nextRemaining []*SystemNode
+		var currentBatch []*systemNode
+		var nextRemaining []*systemNode
 
 		for _, sys := range remaining {
 			canRun := true
@@ -154,7 +180,7 @@ func (s *Scheduler) computeBatches(systems []*SystemNode) [][]*SystemNode {
 	return batches
 }
 
-func systemsConflict(a, b *SystemNode) bool {
+func systemsConflict(a, b *systemNode) bool {
 	for id := range a.writes {
 		if _, ok := b.writes[id]; ok {
 			return true
@@ -216,7 +242,7 @@ func (s *Scheduler) RunUpdate(w *World, dt float64) {
 	}
 }
 
-func (s *Scheduler) executeBatch(w *World, dt float64, batch []*SystemNode) {
+func (s *Scheduler) executeBatch(w *World, dt float64, batch []*systemNode) {
 	if len(batch) == 1 {
 		ctx := SystemContext{
 			World:    w,
@@ -234,7 +260,7 @@ func (s *Scheduler) executeBatch(w *World, dt float64, batch []*SystemNode) {
 	// TODO Work stealing
 
 	for _, sys := range batch {
-		go func(node *SystemNode) {
+		go func(node *systemNode) {
 			defer wg.Done()
 
 			ctx := SystemContext{
@@ -262,6 +288,8 @@ const (
 	RemoveComponentFromEntity
 )
 
+// Command represents a structural change instruction
+// (create entity, destroy entity, add component, remove component).
 type Command struct {
 	Op        CommandOperation
 	Entity    Entity
@@ -271,18 +299,23 @@ type Command struct {
 	Timestamp int64
 }
 
+// A CommandBuffer collects commands from systems and executes
+// them at the end of the tick.
 type CommandBuffer struct {
 	commands []Command
 }
 
+// Reset resets the command buffer.
 func (cb *CommandBuffer) Reset() {
 	cb.commands = cb.commands[:0]
 }
 
+// GetCommands retrieves all queued commands from cb.
 func (cb *CommandBuffer) GetCommands() []Command {
 	return cb.commands
 }
 
+// CreateEntity inserts a create-entity-command to cb.
 func (cb *CommandBuffer) CreateEntity(e Entity, initial ...any) {
 	values := make(map[reflect.Type]any)
 	for _, v := range initial {
@@ -297,6 +330,7 @@ func (cb *CommandBuffer) CreateEntity(e Entity, initial ...any) {
 	})
 }
 
+// DestroyEntity inserts a destroy-entity-command to cb.
 func (cb *CommandBuffer) DestroyEntity(e Entity) {
 	cb.commands = append(cb.commands, Command{
 		Op:        DestroyEntityCommand,
@@ -305,6 +339,7 @@ func (cb *CommandBuffer) DestroyEntity(e Entity) {
 	})
 }
 
+// AddComponent inserts a add-component-command to cb.
 func AddComponent[T any](cb *CommandBuffer, e Entity, initial T) {
 	t := reflect.TypeFor[T]()
 	cb.commands = append(cb.commands, Command{
@@ -316,6 +351,7 @@ func AddComponent[T any](cb *CommandBuffer, e Entity, initial T) {
 	})
 }
 
+// RemoveComponent inserts a remove-component-command to cb.
 func RemoveComponent[T any](cb *CommandBuffer, e Entity) {
 	t := reflect.TypeFor[T]()
 	cb.commands = append(cb.commands, Command{

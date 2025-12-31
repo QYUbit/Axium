@@ -19,7 +19,7 @@ func SetupSystem(ctx ecs.SystemContext) {
 }
 
 func MovementSystem(ctx ecs.SystemContext) {
-	gameSpeed := ecs.GetSingleton[GameSpeed](ctx.World)
+	gameSpeed, _ := ecs.GetSingleton[GameSpeed](ctx.World)
 	q := ecs.Query2[Position, Velocity](ctx.World)
 
 	for row := range q.Iter() {
@@ -35,7 +35,7 @@ func PrintPositionsSystem(ctx ecs.SystemContext) {
 	q := ecs.Query1[Position](ctx.World)
 
 	for row := range q.Iter() {
-		fmt.Printf("Entity %d at %v\n", row.ID, *row.C)
+		fmt.Printf("Entity %d at %v\n", row.E, *row.C)
 	}
 }
 
@@ -45,18 +45,18 @@ func MyGame(engine *ecs.ECSEngine) {
 
 	ecs.RegisterSingleton(engine, GameSpeed{1})
 
-	engine.RegisterSystem(
+	engine.RegisterSystemFunc(
 		SetupSystem,
 		ecs.Trigger(ecs.OnStartup),
 	)
 
-	engine.RegisterSystem(
+	engine.RegisterSystemFunc(
 		MovementSystem,
 		ecs.Reads(Velocity{}, Position{}, GameSpeed{}),
 		ecs.Writes(Position{}),
 	)
 
-	engine.RegisterSystem(
+	engine.RegisterSystemFunc(
 		PrintPositionsSystem,
 		ecs.Reads(Position{}),
 	)

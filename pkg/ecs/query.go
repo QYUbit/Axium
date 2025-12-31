@@ -190,11 +190,13 @@ func (q *query) iter() iter.Seq[Entity] {
 // ==================================================================
 
 type View1[T any] struct {
-	s     *Store[T]
+	s     *store[T]
 	it    iter.Seq[Entity]
 	empty bool
 }
 
+// Query1 builds a query (with the options opts) and returns a view that can
+// iterate over one component of each entity matching the constructed query.
 func Query1[T any](w *World, opts ...QueryOption) *View1[T] {
 	s, ok := getStoreFromWorld[T](w)
 	if !ok {
@@ -215,17 +217,21 @@ func Query1[T any](w *World, opts ...QueryOption) *View1[T] {
 	}
 }
 
+// Row1 represents an entity E and one corresponding component of type T.
 type Row1[T any] struct {
-	ID Entity
-	C  *T
+	E Entity
+	C *T
 }
 
 func (v *View1[T]) Iter() iter.Seq[Row1[T]] {
+	if v.empty {
+		return func(yield func(Row1[T]) bool) {}
+	}
 	return func(yield func(Row1[T]) bool) {
 		var row Row1[T]
 
 		for id := range v.it {
-			row.ID = id
+			row.E = id
 			row.C = v.s.Get(id)
 
 			if !yield(row) {
@@ -240,12 +246,14 @@ func (v *View1[T]) Iter() iter.Seq[Row1[T]] {
 // ==================================================================
 
 type View2[T1, T2 any] struct {
-	s1    *Store[T1]
-	s2    *Store[T2]
+	s1    *store[T1]
+	s2    *store[T2]
 	it    iter.Seq[Entity]
 	empty bool
 }
 
+// Query2 builds a query (with the options opts) and returns a view that can
+// iterate over two components of each entity matching the constructed query.
 func Query2[T1, T2 any](w *World, opts ...QueryOption) *View2[T1, T2] {
 	s1, ok := getStoreFromWorld[T1](w)
 	if !ok {
@@ -272,18 +280,22 @@ func Query2[T1, T2 any](w *World, opts ...QueryOption) *View2[T1, T2] {
 	}
 }
 
+// Row2 represents an entity E and two corresponding components of types T1 and T2.
 type Row2[T1, T2 any] struct {
-	ID Entity
+	E  Entity
 	C1 *T1
 	C2 *T2
 }
 
 func (v *View2[T1, T2]) Iter() iter.Seq[Row2[T1, T2]] {
+	if v.empty {
+		return func(yield func(Row2[T1, T2]) bool) {}
+	}
 	return func(yield func(Row2[T1, T2]) bool) {
 		var row Row2[T1, T2]
 
 		for id := range v.it {
-			row.ID = id
+			row.E = id
 			row.C1 = v.s1.Get(id)
 			row.C2 = v.s2.Get(id)
 
@@ -299,13 +311,15 @@ func (v *View2[T1, T2]) Iter() iter.Seq[Row2[T1, T2]] {
 // ==================================================================
 
 type View3[T1, T2, T3 any] struct {
-	s1    *Store[T1]
-	s2    *Store[T2]
-	s3    *Store[T3]
+	s1    *store[T1]
+	s2    *store[T2]
+	s3    *store[T3]
 	it    iter.Seq[Entity]
 	empty bool
 }
 
+// Query3 builds a query (with the options opts) and returns a view that can
+// iterate over three components of each entity matching the constructed query.
 func Query3[T1, T2, T3 any](w *World, opts ...QueryOption) *View3[T1, T2, T3] {
 	s1, ok := getStoreFromWorld[T1](w)
 	if !ok {
@@ -338,19 +352,23 @@ func Query3[T1, T2, T3 any](w *World, opts ...QueryOption) *View3[T1, T2, T3] {
 	}
 }
 
+// Row3 represents an entity E and three corresponding components of types T1, T2 and T3.
 type Row3[T1, T2, T3 any] struct {
-	ID Entity
+	E  Entity
 	C1 *T1
 	C2 *T2
 	C3 *T3
 }
 
 func (v *View3[T1, T2, T3]) Iter() iter.Seq[Row3[T1, T2, T3]] {
+	if v.empty {
+		return func(yield func(Row3[T1, T2, T3]) bool) {}
+	}
 	return func(yield func(Row3[T1, T2, T3]) bool) {
 		var row Row3[T1, T2, T3]
 
 		for id := range v.it {
-			row.ID = id
+			row.E = id
 			row.C1 = v.s1.Get(id)
 			row.C2 = v.s2.Get(id)
 			row.C3 = v.s3.Get(id)
