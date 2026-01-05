@@ -340,19 +340,30 @@ func (cb *CommandBuffer) DestroyEntity(e Entity) {
 }
 
 // AddComponent inserts a add-component-command to cb.
-func AddComponent[T any](cb *CommandBuffer, e Entity, initial T) {
-	t := reflect.TypeFor[T]()
+func (cb *CommandBuffer) AddComponent(e Entity, v any) {
+	t := reflect.TypeOf(v)
 	cb.commands = append(cb.commands, Command{
 		Op:        AddComponentToEntity,
 		Entity:    e,
 		Type:      t,
-		Value:     initial, // ! Boxing
+		Value:     v, // ! Boxing
 		Timestamp: time.Now().UnixNano(),
 	})
 }
 
 // RemoveComponent inserts a remove-component-command to cb.
-func RemoveComponent[T any](cb *CommandBuffer, e Entity) {
+func (cb *CommandBuffer) RemoveComponent(e Entity, v any) {
+	t := reflect.TypeOf(v)
+	cb.commands = append(cb.commands, Command{
+		Op:        RemoveComponentFromEntity,
+		Entity:    e,
+		Type:      t,
+		Timestamp: time.Now().UnixNano(),
+	})
+}
+
+// RemoveComponentFor inserts a remove-component-command to cb.
+func RemoveComponentFor[T any](cb *CommandBuffer, e Entity) {
 	t := reflect.TypeFor[T]()
 	cb.commands = append(cb.commands, Command{
 		Op:        RemoveComponentFromEntity,

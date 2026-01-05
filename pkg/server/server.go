@@ -171,7 +171,7 @@ func (s *Server) RegisterRoom(name string, f RoomFactory) {
 func (s *Server) CreateRoom(typ string) (*Room, error) {
 	factory, ok := s.roomFactories[typ]
 	if !ok {
-		return nil, fmt.Errorf("Room factory \"%s\" not found")
+		return nil, fmt.Errorf("Room factory \"%s\" not found", typ)
 	}
 
 	var id string
