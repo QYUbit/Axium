@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"log"
+	"time"
 
 	s2 "github.com/QYUbit/Axium/pkg/server_v2"
 	"github.com/quic-go/quic-go"
@@ -87,5 +88,6 @@ func main() {
 		log.Fatal(err)
 	}
 
+	time.Sleep(time.Second * 10)
 	log.Println("Exiting")
 }

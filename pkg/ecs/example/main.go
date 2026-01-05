@@ -13,6 +13,10 @@ type Velocity struct{ X, Y float64 }
 
 type GameSpeed struct{ Speed float64 }
 
+type DeltaThingy struct {
+	Entity ecs.Entity
+}
+
 func SetupSystem(ctx ecs.SystemContext) {
 	player := ecs.Entity(0)
 	ctx.Commands.CreateEntity(player, Position{}, Velocity{1, 0})
@@ -20,14 +24,16 @@ func SetupSystem(ctx ecs.SystemContext) {
 
 func MovementSystem(ctx ecs.SystemContext) {
 	gameSpeed, _ := ecs.GetSingleton[GameSpeed](ctx.World)
+	speed := gameSpeed.Get().Speed
+
 	q := ecs.Query2[Position, Velocity](ctx.World)
 
 	for row := range q.Iter() {
-		pos := row.C1
-		vel := row.C2
+		pos := row.Mut1()
+		vel := row.Get2()
 
-		pos.X += vel.X * ctx.Dt * gameSpeed.Speed
-		pos.Y += vel.Y * ctx.Dt * gameSpeed.Speed
+		pos.X += vel.X * ctx.Dt * speed
+		pos.Y += vel.Y * ctx.Dt * speed
 	}
 }
 
@@ -35,7 +41,7 @@ func PrintPositionsSystem(ctx ecs.SystemContext) {
 	q := ecs.Query1[Position](ctx.World)
 
 	for row := range q.Iter() {
-		fmt.Printf("Entity %d at %v\n", row.E, *row.C)
+		fmt.Printf("Entity %d at %v\n", row.E, *row.Get())
 	}
 }
 

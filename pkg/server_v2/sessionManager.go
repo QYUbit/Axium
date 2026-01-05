@@ -35,14 +35,10 @@ func (m *sessionManager) addSession(ctx context.Context, conn *quic.Conn) {
 	m.sessions[id] = ses
 	m.sessionsMu.Unlock()
 
-	if err := ses.openMainStream(ctx); err != nil {
-		// TODO Log
-	}
-
 	if m.useDatagrams {
 		go ses.datagramLoop(ctx)
 	}
-	ses.readLoop(ctx, m.dispatcher)
+	ses.streamLoop(ctx, m.dispatcher)
 
 	println("end of read loop")
 

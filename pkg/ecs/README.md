@@ -43,7 +43,7 @@ func MySystem(ctx SystemContext) {
 
 engine := NewEngine()
 
-engine.RegisterSystem(MySystem)
+engine.RegisterSystemFunc(MySystem)
 ```
 
 To access components, query them from the world.
@@ -56,7 +56,7 @@ func MySystem(ctx SystemContext) {
     query := Query1[Name](Require(Person{})) // Will query every entity with components Name and Person. But iterates only over Name components.
 
     for row := range query {
-        name := row.C
+        name := row.Get()
         entity := row.E
         fmt.Printf("Name of %d: %s\n", entity, name)
     }
@@ -92,11 +92,13 @@ type TickCounter struct {
 
 func IncreseTickSystem(ctx SystemContext) {
     counter := GetSingleton[TickCounter](ctx.World)
-    counter.Tick++
+    counter.Mut().Tick++
 }
 ```
 
 Messages are used to communicate between systems and can even be used for communication outside of systems.
+
+Note: For accesses to message queues outside of systems you have to use `PushMessageSafe[T](msg T)` and `CollectMessagesSafe[T]() []T` respectivly.
 
 ```Go
 type SomeMessage struct {
@@ -116,14 +118,40 @@ RegisterMessage[SomeMessage](engine)
 
 engine.RegisterSystem(MySystem)
 
-PushMessageSafe(engine, SomeMessage{"Hello!"})
+PushMessageSafe(engine, SomeMessage{Payload: "Hello!"})
 ```
+
+Most* methods to interact with the world are not thread-safe, since locks are avoided to increase performance. To circumvent data races, you have to specify the respective dependencies for each system.
+
+*Note: Commands and message-reads are thread-safe, other world accesses are not.
+
+```Go
+type Position struct {X, Y float64}
+type Velocity struct {X, Y float64}
+
+RegisterSystemFunc(
+    engine,
+    Reads(Velocity{}),
+    Writes(Position{}),
+)
+```
+
+## Event Loop
+
+`(*ecs.ECSEngine).Run()` starts the event loop. `(*ecs.ECSEngine).Close()` waits until the current tick is completed and stops the loop. All registrations must be completed before `(*ecs.ECSEngine).Run()` is called.
+
+Tick flow:
+
+1. All update systems are being executed.
+
+2. Command buffers get merged into one.
+
+3. All end-of-tick systems are being executed (with the merged command buffer).
+
+4. Command buffer are executed.
+
+5. Message queues are swapped.
 
 ## Todos
 
-- Enhanced scheduling options
-- Query caching
-- Dirty queries
-- Code gen
-- Delta generation
 - Debug tools & Testing

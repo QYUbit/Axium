@@ -2,6 +2,8 @@ package s2
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -35,11 +37,13 @@ func newSession(
 	conn *quic.Conn,
 ) *Session {
 	s := &Session{
-		id:       id,
-		manager:  manager,
-		protocol: protocol,
-		conn:     conn,
-		cancel:   cancel,
+		id:                id,
+		manager:           manager,
+		protocol:          protocol,
+		conn:              conn,
+		cancel:            cancel,
+		rooms:             make(map[string]*Room),
+		mainStreamTimeout: time.Second,
 	}
 
 	return s
@@ -47,19 +51,6 @@ func newSession(
 
 func (s *Session) ID() string {
 	return s.id
-}
-
-func (s *Session) openMainStream(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, s.mainStreamTimeout)
-	defer cancel()
-
-	stream, err := s.conn.AcceptStream(ctx)
-	if err != nil {
-		return err
-	}
-
-	s.mainStream = stream
-	return nil
 }
 
 func (s *Session) Close(code quic.ApplicationErrorCode, reason string) error {
@@ -78,18 +69,40 @@ func (s *Session) Close(code quic.ApplicationErrorCode, reason string) error {
 	return err
 }
 
-func (s *Session) readLoop(ctx context.Context, dispatcher msgDispatcher) {
+func (s *Session) streamLoop(ctx context.Context, dispatcher msgDispatcher) {
+	for {
+		stream, err := s.conn.AcceptStream(ctx)
+		if err != nil {
+			return
+		}
+
+		println("new stream")
+
+		if s.mainStream == nil {
+			s.mainStream = stream
+			println("new main stream")
+		}
+
+		go s.readLoop(ctx, dispatcher, stream)
+	}
+}
+
+func (s *Session) readLoop(ctx context.Context, dispatcher msgDispatcher, stream *quic.Stream) {
 	for {
 		var msg Message
 
-		if err := s.protocol.ReadMessage(&msg, s.mainStream); err != nil {
+		if err := s.protocol.ReadMessage(&msg, stream); err != nil {
 			select {
 			case <-ctx.Done():
 				return
 			default:
-				// TODO Log error
+				log.Println("Failed to read message:", err)
+				// TODO Log
+				continue
 			}
 		}
+
+		fmt.Println("read message:", msg)
 
 		dispatcher(ctx, s, msg)
 	}

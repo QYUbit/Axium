@@ -6,16 +6,28 @@ import (
 	"time"
 )
 
+// TODO Improve Scheduler
+
 type SystemTrigger int
 
 const (
+	// Executes one time at the start of the event loop. Executed sequentially.
 	OnStartup SystemTrigger = iota
+	// Executes every tick. Can be executed in parallel.
 	OnUpdate
+	// Executes at the and of every tick. Executed sequentially.
+	// All command buffers are merged into one.
 	OnEndOfTick
 )
 
+// SystemFunc is a function that can interact with the world state.
 type SystemFunc func(ctx SystemContext)
 
+func (f SystemFunc) Run(ctx SystemContext) {
+	f(ctx)
+}
+
+// System has a method Run that can interact with the world state.
 type System interface {
 	Run(ctx SystemContext)
 }
@@ -36,10 +48,11 @@ type Scheduler struct {
 type systemNode struct {
 	reads    map[reflect.Type]struct{}
 	writes   map[reflect.Type]struct{}
-	runner   SystemFunc
+	runner   System
 	commands *CommandBuffer
 }
 
+// NewScheduler creates a new Scheduler.
 func NewScheduler() *Scheduler {
 	return &Scheduler{
 		initSystems: make([]*systemNode, 0),
@@ -48,16 +61,15 @@ func NewScheduler() *Scheduler {
 	}
 }
 
+// SystemConfig represents system configuration.
 type SystemConfig struct {
-	System  SystemFunc
 	Trigger SystemTrigger
 	Reads   map[reflect.Type]struct{}
 	Writes  map[reflect.Type]struct{}
 }
 
-func buildSystemConfig(sys SystemFunc, opts []SystemOption) SystemConfig {
+func buildSystemConfig(opts []SystemOption) SystemConfig {
 	config := SystemConfig{
-		System:  sys,
 		Reads:   make(map[reflect.Type]struct{}),
 		Writes:  make(map[reflect.Type]struct{}),
 		Trigger: -1,
@@ -70,14 +82,19 @@ func buildSystemConfig(sys SystemFunc, opts []SystemOption) SystemConfig {
 	return config
 }
 
+// System is a function that mutates SystemConfig. It provides a practical
+// way to define system configuration.
 type SystemOption func(*SystemConfig)
 
+// Trigger returns a SystemOption. It specifies when a system will be executed.
 func Trigger(trigger SystemTrigger) SystemOption {
 	return func(config *SystemConfig) {
 		config.Trigger = trigger
 	}
 }
 
+// Read returns a SystemOption. It specifies which components and singletons
+// a system will a read. It is used to determine which systems can run in parallel.
 func Reads(comps ...any) SystemOption {
 	return func(config *SystemConfig) {
 		for _, comp := range comps {
@@ -86,6 +103,8 @@ func Reads(comps ...any) SystemOption {
 	}
 }
 
+// Write returns a SystemOption. It specifies which components, singletons and message queues
+// a system will a write. It is used to determine which systems can run in parallel.
 func Writes(comps ...any) SystemOption {
 	return func(config *SystemConfig) {
 		for _, comp := range comps {
@@ -94,35 +113,13 @@ func Writes(comps ...any) SystemOption {
 	}
 }
 
-func (s *Scheduler) AddSystemFunc(sys SystemFunc, opts []SystemOption) {
-	config := buildSystemConfig(sys, opts)
-
-	node := &systemNode{
-		reads:    config.Reads,
-		writes:   config.Writes,
-		runner:   config.System,
-		commands: &CommandBuffer{},
-	}
-
-	switch config.Trigger {
-	case OnStartup:
-		s.initSystems = append(s.initSystems, node)
-	case OnEndOfTick:
-		s.endSystems = append(s.endSystems, node)
-	case OnUpdate:
-		s.systems = append(s.systems, node)
-	default:
-		s.systems = append(s.systems, node)
-	}
-}
-
 func (s *Scheduler) AddSystem(sys System, opts []SystemOption) {
-	config := buildSystemConfig(sys.Run, opts)
+	config := buildSystemConfig(opts)
 
 	node := &systemNode{
 		reads:    config.Reads,
 		writes:   config.Writes,
-		runner:   config.System,
+		runner:   sys,
 		commands: &CommandBuffer{},
 	}
 
@@ -207,7 +204,7 @@ func (s *Scheduler) RunInit(w *World) {
 			World:    w,
 			Commands: sys.commands,
 		}
-		sys.runner(ctx)
+		sys.runner.Run(ctx)
 
 		w.processCommands(sys.commands.GetCommands())
 		sys.commands.Reset()
@@ -226,7 +223,7 @@ func (s *Scheduler) RunUpdate(w *World, dt float64) {
 	}
 
 	for _, sys := range s.endSystems {
-		sys.runner(SystemContext{
+		sys.runner.Run(SystemContext{
 			World: w,
 			Dt:    dt,
 			Commands: &CommandBuffer{
@@ -250,14 +247,12 @@ func (s *Scheduler) executeBatch(w *World, dt float64, batch []*systemNode) {
 			Commands: batch[0].commands,
 		}
 
-		batch[0].runner(ctx)
+		batch[0].runner.Run(ctx)
 		return
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(len(batch))
-
-	// TODO Work stealing
 
 	for _, sys := range batch {
 		go func(node *systemNode) {
@@ -268,7 +263,7 @@ func (s *Scheduler) executeBatch(w *World, dt float64, batch []*systemNode) {
 				Dt:       dt,
 				Commands: node.commands,
 			}
-			node.runner(ctx)
+			node.runner.Run(ctx)
 		}(sys)
 	}
 
@@ -315,6 +310,8 @@ func (cb *CommandBuffer) GetCommands() []Command {
 	return cb.commands
 }
 
+// TODO Auto entities
+
 // CreateEntity inserts a create-entity-command to cb.
 func (cb *CommandBuffer) CreateEntity(e Entity, initial ...any) {
 	values := make(map[reflect.Type]any)
@@ -341,12 +338,13 @@ func (cb *CommandBuffer) DestroyEntity(e Entity) {
 
 // AddComponent inserts a add-component-command to cb.
 func (cb *CommandBuffer) AddComponent(e Entity, v any) {
+	// ! Boxing
 	t := reflect.TypeOf(v)
 	cb.commands = append(cb.commands, Command{
 		Op:        AddComponentToEntity,
 		Entity:    e,
 		Type:      t,
-		Value:     v, // ! Boxing
+		Value:     v,
 		Timestamp: time.Now().UnixNano(),
 	})
 }

@@ -7,9 +7,6 @@ import (
 	"sync"
 )
 
-// Entity represents an ECS entity.
-type Entity uint64
-
 // World contains the state of an ECSEngine.
 type World struct {
 	entities      map[Entity]struct{}
@@ -30,6 +27,18 @@ func NewWorld() *World {
 		messages:      make(map[reflect.Type]typedMessageStore),
 		autoComponent: 10_000,
 	}
+}
+
+// ==================================================================
+// Entities
+// ==================================================================
+
+// Entity represents an ECS entity.
+type Entity uint64
+
+func (w *World) entityExists(e Entity) bool {
+	_, exists := w.entities[e]
+	return exists
 }
 
 // ==================================================================
@@ -62,8 +71,8 @@ func (w *World) destroyEntity(e Entity) {
 	delete(w.entities, e)
 
 	for _, store := range w.stores {
-		if store.HasEntity(e) {
-			store.Remove(e)
+		if store.hasEntity(e) {
+			store.remove(e)
 		}
 	}
 }
@@ -71,14 +80,14 @@ func (w *World) destroyEntity(e Entity) {
 func (w *World) addComponent(e Entity, typ reflect.Type, initial any) {
 	s, ok := w.stores[typ]
 	if ok {
-		s.Add(e, initial)
+		s.add(e, initial)
 	}
 }
 
 func (w *World) removeComponent(e Entity, typ reflect.Type) {
 	s, ok := w.stores[typ]
 	if ok {
-		s.Remove(e)
+		s.remove(e)
 	}
 }
 
@@ -206,16 +215,37 @@ func registerSingleton[T any](w *World, initial T) {
 	w.singletons[t] = store
 }
 
-func getSingleton[T any](w *World) *T {
+func getSingleton[T any](w *World) (*Singleton[T], bool) {
 	t := reflect.TypeFor[T]()
 	s := w.singletons[t]
 
 	store, ok := s.(*singletonStore[T])
 	if !ok {
-		return nil
+		return nil, false
 	}
 
-	return &store.data
+	return &Singleton[T]{s: store}, true
+}
+
+// Singleton is a wrapper for a singleton value.
+type Singleton[T any] struct {
+	s *singletonStore[T]
+}
+
+// Get retrives the sigleton T.
+func (s *Singleton[T]) Get() *T {
+	return &s.s.data
+}
+
+// Get retrieves the sigleton T and marks it as dirty.
+func (s *Singleton[T]) Mut() *T {
+	s.s.dirty = true
+	return &s.s.data
+}
+
+// IsDirty reports whether the singleton is dirty.
+func (s *Singleton[T]) IsDirty() bool {
+	return s.s.dirty
 }
 
 // ==================================================================
@@ -252,9 +282,10 @@ func registerComponent[T any](w *World, autoId bool, id uint16) {
 	id = w.generateId(autoId, id)
 
 	s := &store[T]{
-		id:     id,
-		typ:    t,
-		sparse: make(map[Entity]int),
+		id:       id,
+		typ:      t,
+		sparse:   make(map[Entity]int),
+		dirtySet: make(map[Entity]struct{}),
 	}
 
 	w.stores[t] = s
@@ -274,20 +305,21 @@ func getStoreFromWorld[T any](w *World) (*store[T], bool) {
 
 type typedStore interface {
 	Type() reflect.Type
-	Entities() iter.Seq[Entity]
-	HasEntity(e Entity) bool
-	Add(e Entity, value any)
-	Remove(e Entity)
-	Len() int
+	entities() iter.Seq[Entity]
+	hasEntity(e Entity) bool
+	add(e Entity, value any)
+	remove(e Entity)
+	len() int
 }
 
 type store[T any] struct {
-	id     uint16
-	typ    reflect.Type
-	sparse map[Entity]int
-	dense  []Entity
-	data   []T
-	dirty  map[Entity]struct{}
+	id       uint16
+	typ      reflect.Type
+	sparse   map[Entity]int
+	dense    []Entity
+	data     []T
+	dirtySet map[Entity]struct{}
+	dirty    bool
 }
 
 func (s store[T]) String() string {
@@ -303,8 +335,8 @@ func (s *store[T]) Type() reflect.Type {
 	return s.typ
 }
 
-func (s *store[T]) Add(e Entity, value any) {
-	if s.HasEntity(e) {
+func (s *store[T]) add(e Entity, value any) {
+	if s.hasEntity(e) {
 		return
 	}
 
@@ -321,7 +353,7 @@ func (s *store[T]) Add(e Entity, value any) {
 	s.sparse[e] = newIndex
 }
 
-func (s *store[T]) Remove(e Entity) {
+func (s *store[T]) remove(e Entity) {
 	idx, exists := s.sparse[e]
 	if !exists {
 		return
@@ -343,11 +375,11 @@ func (s *store[T]) Remove(e Entity) {
 	delete(s.sparse, e)
 }
 
-func (s *store[T]) Len() int {
+func (s *store[T]) len() int {
 	return len(s.dense)
 }
 
-func (s *store[T]) Entities() iter.Seq[Entity] {
+func (s *store[T]) entities() iter.Seq[Entity] {
 	return func(yield func(Entity) bool) {
 		for _, e := range s.dense {
 			if !yield(e) {
@@ -357,18 +389,42 @@ func (s *store[T]) Entities() iter.Seq[Entity] {
 	}
 }
 
-func (s *store[T]) HasEntity(e Entity) bool {
+func (s *store[T]) hasEntity(e Entity) bool {
 	_, ok := s.sparse[e]
 	return ok
 }
 
-func (s *store[T]) Get(e Entity) *T {
+func (s *store[T]) get(e Entity) *T {
 	return &s.data[s.sparse[e]]
+}
+
+func (s *store[T]) mut(e Entity) *T {
+	s.dirtySet[e] = struct{}{}
+	return &s.data[s.sparse[e]]
+}
+
+func (s *store[T]) markDirty() {
+	s.dirty = true
+}
+
+func (s *store[T]) resetDirty() {
+	s.dirty = false
+	if len(s.dirtySet) > 0 {
+		s.dirtySet = make(map[Entity]struct{})
+	}
 }
 
 func (s *store[T]) getDirtyComps() map[Entity]T {
 	comps := make(map[Entity]T)
-	for e := range s.dirty {
+
+	if s.dirty {
+		for e, idx := range s.sparse {
+			comps[e] = s.data[idx]
+		}
+		return comps
+	}
+
+	for e := range s.dirtySet {
 		idx, ok := s.sparse[e]
 		if !ok {
 			continue
