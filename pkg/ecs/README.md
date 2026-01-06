@@ -100,6 +100,8 @@ Messages are used to communicate between systems and can even be used for commun
 
 Note: For accesses to message queues outside of systems you have to use `PushMessageSafe[T](msg T)` and `CollectMessagesSafe[T]() []T` respectivly.
 
+Note: In one tick there are actually two message queues. One to write to and one to read from. Therefore reads can not conflict with other reads or writes. At the and of a tick the old write queue becomes the new read queue and a new write queue gets created. Consequently writen messages are only readable in the next tick and discarded in the one after that. This process is the reason for the statement in the note one above.
+
 ```Go
 type SomeMessage struct {
     Payload string
@@ -129,8 +131,19 @@ Most* methods to interact with the world are not thread-safe, since locks are av
 type Position struct {X, Y float64}
 type Velocity struct {X, Y float64}
 
-RegisterSystemFunc(
-    engine,
+func MovementSystem(ctx SystemContext) {
+    query := Query2[Position, Velocity](ctx.World)
+
+    for row := query.Iter() {
+        pos := row.Mut1()
+        vel := row.Get2()
+        pos.X += vel.X
+        pos.Y += vel.Y
+    }
+}
+
+engine.RegisterSystemFunc(
+    MovementSystem,
     Reads(Velocity{}),
     Writes(Position{}),
 )

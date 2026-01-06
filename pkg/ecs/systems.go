@@ -87,6 +87,7 @@ func buildSystemConfig(opts []SystemOption) SystemConfig {
 type SystemOption func(*SystemConfig)
 
 // Trigger returns a SystemOption. It specifies when a system will be executed.
+// Systems run on update by default.
 func Trigger(trigger SystemTrigger) SystemOption {
 	return func(config *SystemConfig) {
 		config.Trigger = trigger
