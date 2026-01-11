@@ -197,6 +197,48 @@ func (q *query) iter() iter.Seq[Entity] {
 }
 
 // ==================================================================
+// Query 0
+// ==================================================================
+
+type View0 struct {
+	it    iter.Seq[Entity]
+	empty bool
+}
+
+// Query builds a query (with the options opts) and returns a view that can
+// iterate over entity matching the constructed query.
+func Query(w *World, opts ...QueryOption) *View0 {
+	config := buildQueryConfig(opts)
+
+	q := newQuery(w, config)
+	if q == nil {
+		return &View0{empty: true}
+	}
+
+	return &View0{
+		it: q.iter(),
+	}
+}
+
+// Iter returns an iterator that can interate over each queried entity.
+func (v *View0) Iter() iter.Seq[Entity] {
+	if v.empty {
+		return func(yield func(Entity) bool) {}
+	}
+	return func(yield func(Entity) bool) {
+		var e Entity
+
+		for id := range v.it {
+			e = id
+
+			if !yield(e) {
+				return
+			}
+		}
+	}
+}
+
+// ==================================================================
 // Query 1
 // ==================================================================
 

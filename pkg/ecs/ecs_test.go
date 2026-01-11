@@ -18,10 +18,10 @@ func TestEngineCreation(t *testing.T) {
 	if engine == nil {
 		t.Fatal("Engine creation failed")
 	}
-	if engine.world == nil {
+	if engine.World() == nil {
 		t.Error("Engine world is nil")
 	}
-	if engine.scheduler == nil {
+	if engine.Scheduler() == nil {
 		t.Error("Engine scheduler is nil")
 	}
 }
@@ -34,8 +34,8 @@ func TestComponentRegistration(t *testing.T) {
 	RegisterComponent[TestVelocity](engine, 1)
 	RegisterComponentAuto[TestHealth](engine)
 
-	if len(engine.world.stores) != 3 {
-		t.Errorf("Expected 3 stores, got %d", len(engine.world.stores))
+	if len(engine.World().stores) != 3 {
+		t.Errorf("Expected 3 stores, got %d", len(engine.World().stores))
 	}
 }
 
@@ -46,8 +46,8 @@ func TestComponentRegistrationDuplicate(t *testing.T) {
 	RegisterComponent[TestPosition](engine, 0)
 	RegisterComponent[TestPosition](engine, 0)
 
-	if len(engine.world.stores) != 1 {
-		t.Errorf("Expected 1 store after duplicate registration, got %d", len(engine.world.stores))
+	if len(engine.World().stores) != 1 {
+		t.Errorf("Expected 1 store after duplicate registration, got %d", len(engine.World().stores))
 	}
 }
 
@@ -76,14 +76,14 @@ func TestEntityCreation(t *testing.T) {
 		called = true
 	}, Trigger(OnStartup))
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
 
 	if !called {
 		t.Error("System was not called")
 	}
 
-	if !engine.world.entityExists(Entity(1)) {
+	if !engine.World().entityExists(Entity(1)) {
 		t.Error("Entity was not created")
 	}
 }
@@ -107,20 +107,20 @@ func TestEntityDestruction(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
 
 	if !setupCalled {
 		t.Error("Setup system was not called")
 	}
 
-	if !engine.world.entityExists(Entity(1)) {
+	if !engine.World().entityExists(Entity(1)) {
 		t.Error("Entity was not created in setup")
 	}
 
-	engine.tick(1.0 / 60.0)
+	engine.ExecuteTick(1.0 / 60.0)
 
-	if engine.world.entityExists(Entity(1)) {
+	if engine.World().entityExists(Entity(1)) {
 		t.Error("Entity was not destroyed")
 	}
 }
@@ -154,10 +154,10 @@ func TestComponentAddRemove(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
+	engine.ExecuteTick(1.0 / 60.0)
 }
 
 // TestQuery1 tests single component queries
@@ -182,9 +182,9 @@ func TestQuery1(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
 
 	if count != 2 {
 		t.Errorf("Expected to find 2 entities, found %d", count)
@@ -215,9 +215,9 @@ func TestQuery2(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
 
 	if count != 1 {
 		t.Errorf("Expected 1 entity with both components, got %d", count)
@@ -244,9 +244,9 @@ func TestQueryWithRequire(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
 
 	if count != 1 {
 		t.Errorf("Expected 1 entity with Health, got %d", count)
@@ -272,9 +272,9 @@ func TestQueryWithExclude(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
 
 	if count != 1 {
 		t.Errorf("Expected 1 entity without Health, got %d", count)
@@ -299,11 +299,11 @@ func TestMutation(t *testing.T) {
 		}
 	}, Writes(TestPosition{}))
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
 
-	pos, ok := Get[TestPosition](engine.world, Entity(1))
+	pos, ok := Get[TestPosition](engine.World(), Entity(1))
 	if !ok {
 		t.Fatal("Position component not found")
 	}
@@ -328,13 +328,13 @@ func TestSingleton(t *testing.T) {
 		counter.Mut().Value++
 	}, Writes(Counter{}))
 
-	engine.scheduler.Compile()
+	engine.Scheduler().Compile()
 
 	for range 5 {
-		engine.tick(1.0 / 60.0)
+		engine.ExecuteTick(1.0 / 60.0)
 	}
 
-	counter, ok := GetSingleton[Counter](engine.world)
+	counter, ok := GetSingleton[Counter](engine.World())
 	if !ok {
 		t.Fatal("Singleton not found")
 	}
@@ -365,10 +365,10 @@ func TestMessages(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
+	engine.Scheduler().Compile()
 
 	for range 3 {
-		engine.tick(1.0 / 60.0)
+		engine.ExecuteTick(1.0 / 60.0)
 	}
 
 	if receivedCount != 2 {
@@ -391,11 +391,11 @@ func TestOnStartupTrigger(t *testing.T) {
 		count++
 	}, Trigger(OnStartup))
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
 
 	for range 5 {
-		engine.tick(1.0 / 60.0)
+		engine.ExecuteTick(1.0 / 60.0)
 	}
 
 	if count != 1 {
@@ -414,10 +414,10 @@ func TestDeltaTime(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
+	engine.Scheduler().Compile()
 
 	expectedDt := 1.0 / 60.0
-	engine.tick(expectedDt)
+	engine.ExecuteTick(expectedDt)
 
 	if receivedDt == 0 {
 		t.Error("System did not receive delta time")
@@ -459,8 +459,8 @@ func TestEmptyQuery(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.ExecuteTick(1.0 / 60.0)
 
 	if count != 0 {
 		t.Errorf("Empty query should return 0 results, got %d", count)
@@ -489,9 +489,9 @@ func TestMultipleEntitiesIteration(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
 
 	if count != 100 {
 		t.Errorf("Expected 100 entities, got %d", count)
@@ -526,9 +526,9 @@ func TestEntitySpecificQuery(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
 
 	if count != 3 {
 		t.Errorf("Expected 3 specific entities, got %d", count)
@@ -554,9 +554,9 @@ func TestExcludeEntitiesQuery(t *testing.T) {
 		}
 	})
 
-	engine.scheduler.Compile()
-	engine.scheduler.RunInit(engine.world)
-	engine.tick(1.0 / 60.0)
+	engine.Scheduler().Compile()
+	engine.Scheduler().RunInit(engine.World())
+	engine.ExecuteTick(1.0 / 60.0)
 
 	if count != 7 {
 		t.Errorf("Expected 7 entities (10 - 3 excluded), got %d", count)

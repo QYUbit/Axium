@@ -4,7 +4,7 @@ Axium is a modular server-side game framework writen in go.
 
 ## Explanation
 
-Building online multiplayer games is hard: You have to deal with netcode, client syncronisation and cheat prevention. On top of that, you have to make sure everything remains performant. This project aims to provide tools simplifying this process.
+Building online multiplayer games is hard: You have to deal with netcode, client synchronization and cheat prevention. On top of that, you have to make sure everything remains performant. This project aims to provide tools simplifying this process.
 
 ## Packages
 

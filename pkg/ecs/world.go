@@ -45,7 +45,8 @@ func (w *World) entityExists(e Entity) bool {
 // Commands
 // ==================================================================
 
-func (w *World) processCommands(commands []Command) {
+// Public for benchmarks
+func (w *World) ProcessCommands(commands []Command) {
 	for _, cmd := range commands {
 		switch cmd.Op {
 		case CreateEntityCommand:

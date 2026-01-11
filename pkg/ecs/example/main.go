@@ -71,7 +71,7 @@ func MyGame(engine *ecs.ECSEngine) {
 func main() {
 	engine := ecs.NewEngine()
 
-	engine.RegisterPlugin(MyGame)
+	engine.RegisterPluginFunc(MyGame)
 
 	ctx := context.Background()
 

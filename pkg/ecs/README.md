@@ -2,6 +2,8 @@
 
 The ecs package provides an Entity Component System (ECS). It is designed to be capable, fast and flexible.
 
+API reference: [GoDoc](https://pkg.go.dev/github.com/QYUbit/Axium/pkg/ecs)
+
 ## What is an ECS
 
 The Entity Component System paradigm is used to seperate data from logic and to provide a way to modularize code.
@@ -21,7 +23,7 @@ type Position struct {
 
 The ECSEngine is the main orchestrator of the ecs package. It can be created with `NewEngine()`.
 
-Components must first get registered to be able to be used. Use `RegisterComponent[T](engine *ECSEngine, id uint16)` or `AutoRegisterComponent[T](engine *ECSEngine)`
+Components must first be registered to be able to be used. Use `RegisterComponent[T](engine *ECSEngine, id uint16)` or `AutoRegisterComponent[T](engine *ECSEngine)`
 
 ```Go
 type Position struct {

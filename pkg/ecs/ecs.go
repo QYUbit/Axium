@@ -60,15 +60,32 @@ func (engine *ECSEngine) tryRegister() {
 // Registration
 // ==================================================================
 
-// An ECSPlugin is a function which defines components, systems, etc.
-// for an ECSEngine.
-type ECSPlugin func(engine *ECSEngine)
+// An Plugin is an interface with a function Init which defines components,
+// systems, etc. for an ECSEngine.
+type Plugin interface {
+	Init(engine *ECSEngine)
+}
 
-// RegisterPlugin registers an ECSPlugin.
+// PluginFunc is a function which defines components, systems, etc.
+// for an ECSEngine.
+type PluginFunc func(engine *ECSEngine)
+
+func (f PluginFunc) Init(engine *ECSEngine) {
+	f(engine)
+}
+
+// RegisterPlugin registers a Plugin.
 // Calls while the engine is running will panic.
-func (engine *ECSEngine) RegisterPlugin(plugin ECSPlugin) {
+func (engine *ECSEngine) RegisterPlugin(plugin Plugin) {
 	engine.tryRegister()
-	plugin(engine)
+	plugin.Init(engine)
+}
+
+// RegisterPluginFunc registers a PluginFunc.
+// Calls while the engine is running will panic.
+func (engine *ECSEngine) RegisterPluginFunc(plugin PluginFunc) {
+	engine.tryRegister()
+	plugin.Init(engine)
 }
 
 // RegisterSystem registers the system sys using the optional options opts.
@@ -119,6 +136,14 @@ func RegisterMessage[T any](engine *ECSEngine) {
 // ==================================================================
 // Global
 // ==================================================================
+
+func (engine *ECSEngine) World() *World {
+	return engine.world
+}
+
+func (engine *ECSEngine) Scheduler() *Scheduler {
+	return engine.scheduler
+}
 
 // EntityExists reports whether entity e is present in w.
 func (w *World) EntityExists(e Entity) bool {
@@ -212,12 +237,12 @@ func (engine *ECSEngine) Run(ctx context.Context, tickRate int) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			engine.tick(1.0 / float64(tickRate))
+			engine.ExecuteTick(1.0 / float64(tickRate))
 		}
 	}
 }
 
-func (engine *ECSEngine) tick(dt float64) {
+func (engine *ECSEngine) ExecuteTick(dt float64) {
 	engine.scheduler.RunUpdate(engine.world, dt)
 }
 

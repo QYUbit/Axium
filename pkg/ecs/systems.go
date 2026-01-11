@@ -207,7 +207,7 @@ func (s *Scheduler) RunInit(w *World) {
 		}
 		sys.runner.Run(ctx)
 
-		w.processCommands(sys.commands.GetCommands())
+		w.ProcessCommands(sys.commands.GetCommands())
 		sys.commands.Reset()
 	}
 }
@@ -233,7 +233,7 @@ func (s *Scheduler) RunUpdate(w *World, dt float64) {
 		})
 	}
 
-	w.processCommands(commands)
+	w.ProcessCommands(commands)
 
 	for _, msgStore := range w.messages {
 		msgStore.swap()
