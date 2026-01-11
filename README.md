@@ -10,6 +10,8 @@ Building online multiplayer games is hard: You have to deal with netcode, client
 
 Axium consists of multible packages. Those are:
 
+Note: At the moment there is just one; more are planned
+
 ### ECS
 
 A capable, fast and type safe Entity Component System (ECS), enabeling an organized way to store, edit and filter your game state. Read more: [ECS Docs](https://github.com/QYUbit/Axium/blob/main/pkg/ecs/README.md)

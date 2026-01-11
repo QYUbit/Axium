@@ -6,8 +6,9 @@ import (
 	"time"
 )
 
-// TODO Improve Scheduler
+// TODO Implement dependencies for startup and merge system.
 
+// SystemTrigger defines when a system will be executed.
 type SystemTrigger int
 
 const (
@@ -16,7 +17,7 @@ const (
 	// Executes every tick. Can be executed in parallel.
 	OnUpdate
 	// Executes at the and of every tick. Executed sequentially.
-	// All command buffers are merged into one.
+	// All command buffers have been merged into one.
 	OnEndOfTick
 )
 
@@ -32,22 +33,62 @@ type System interface {
 	Run(ctx SystemContext)
 }
 
+// SystemContext represents the structures a system can use.
 type SystemContext struct {
-	*World
+	World    *World
 	Dt       float64
 	Commands *CommandBuffer
 }
 
+// SystemRef wrapes a system.
+type SystemRef struct {
+	node *systemNode
+}
+
+// Chain merges other systems to the ref's system.
+// Don't call this method when the engine is running.
+func (ref SystemRef) Chain(systems ...SystemRef) SystemRef {
+	depsSet := make(map[systemId]struct{}, len(ref.node.deps))
+	for _, id := range ref.node.deps {
+		depsSet[id] = struct{}{}
+	}
+	ref.node.deps = ref.node.deps[:0]
+
+	for _, sys := range systems {
+		for t := range sys.node.reads {
+			ref.node.reads[t] = struct{}{}
+		}
+		for t := range sys.node.writes {
+			ref.node.writes[t] = struct{}{}
+		}
+		for _, id := range sys.node.deps {
+			depsSet[id] = struct{}{}
+		}
+	}
+
+	for id := range depsSet {
+		ref.node.deps = append(ref.node.deps, id)
+	}
+	return ref
+}
+
+type systemId int
+
+// Scheduler manages systems.
 type Scheduler struct {
 	initSystems []*systemNode
 	systems     []*systemNode
 	batches     [][]*systemNode
 	endSystems  []*systemNode
+
+	nextSystemID systemId
 }
 
 type systemNode struct {
+	id       systemId
 	reads    map[reflect.Type]struct{}
 	writes   map[reflect.Type]struct{}
+	deps     []systemId
 	runner   System
 	commands *CommandBuffer
 }
@@ -66,6 +107,7 @@ type SystemConfig struct {
 	Trigger SystemTrigger
 	Reads   map[reflect.Type]struct{}
 	Writes  map[reflect.Type]struct{}
+	Deps    []systemId
 }
 
 func buildSystemConfig(opts []SystemOption) SystemConfig {
@@ -114,15 +156,27 @@ func Writes(comps ...any) SystemOption {
 	}
 }
 
-func (s *Scheduler) AddSystem(sys System, opts []SystemOption) {
+// Write returns a SystemOption. It specifies which systems must be executed before a system.
+func DependsOn(systems ...SystemRef) SystemOption {
+	return func(config *SystemConfig) {
+		for _, sys := range systems {
+			config.Deps = append(config.Deps, sys.node.id)
+		}
+	}
+}
+
+func (s *Scheduler) AddSystem(sys System, opts []SystemOption) SystemRef {
 	config := buildSystemConfig(opts)
 
 	node := &systemNode{
+		id:       s.nextSystemID,
 		reads:    config.Reads,
 		writes:   config.Writes,
 		runner:   sys,
 		commands: &CommandBuffer{},
 	}
+
+	s.nextSystemID++
 
 	switch config.Trigger {
 	case OnStartup:
@@ -134,69 +188,98 @@ func (s *Scheduler) AddSystem(sys System, opts []SystemOption) {
 	default:
 		s.systems = append(s.systems, node)
 	}
+
+	return SystemRef{node: node}
 }
 
 func (s *Scheduler) Compile() {
 	s.batches = s.computeBatches(s.systems)
 }
 
-func (s *Scheduler) computeBatches(systems []*systemNode) [][]*systemNode {
+func (s *Scheduler) computeBatches(nodes []*systemNode) [][]*systemNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+
 	var batches [][]*systemNode
-	remaining := make([]*systemNode, len(systems))
-	copy(remaining, systems)
+	placed := make(map[systemId]struct{})
 
-	for len(remaining) > 0 {
-		var currentBatch []*systemNode
-		var nextRemaining []*systemNode
+	for len(placed) < len(nodes) {
+		batch := []*systemNode{}
 
-		for _, sys := range remaining {
-			canRun := true
+		batchReads := make(map[reflect.Type]struct{})
+		batchWrites := make(map[reflect.Type]struct{})
 
-			for _, batchSys := range currentBatch {
-				if systemsConflict(sys, batchSys) {
-					canRun = false
+		for _, n := range nodes {
+			if _, ok := placed[n.id]; ok {
+				continue
+			}
+
+			allDepsPlaced := true
+			for _, dep := range n.deps {
+				if _, ok := placed[dep]; !ok {
+					allDepsPlaced = false
+					break
+				}
+			}
+			// deps not placed
+			if !allDepsPlaced {
+				continue
+			}
+
+			hasConflict := false
+
+			// read & write conflict
+			for writeType := range n.writes {
+				if _, exists := batchReads[writeType]; exists {
+					hasConflict = true
 					break
 				}
 			}
 
-			if canRun {
-				currentBatch = append(currentBatch, sys)
-			} else {
-				nextRemaining = append(nextRemaining, sys)
+			// write & write conflict
+			if !hasConflict {
+				for writeType := range n.writes {
+					if _, exists := batchWrites[writeType]; exists {
+						hasConflict = true
+						break
+					}
+				}
+			}
+
+			// write & read conflict
+			if !hasConflict {
+				for readType := range n.reads {
+					if _, exists := batchWrites[readType]; exists {
+						hasConflict = true
+						break
+					}
+				}
+			}
+
+			// no conflicts
+			if !hasConflict {
+				batch = append(batch, n)
+				placed[n.id] = struct{}{}
+
+				for readType := range n.reads {
+					batchReads[readType] = struct{}{}
+				}
+				for writeType := range n.writes {
+					batchWrites[writeType] = struct{}{}
+				}
 			}
 		}
 
-		if len(currentBatch) == 0 {
-			currentBatch = append(currentBatch, remaining[0])
-			nextRemaining = remaining[1:]
+		if len(batch) > 0 {
+			batches = append(batches, batch)
+		} else {
+			// prevent deadlock, exit sliently
+			break
 		}
-
-		batches = append(batches, currentBatch)
-		remaining = nextRemaining
 	}
 
 	return batches
-}
-
-func systemsConflict(a, b *systemNode) bool {
-	for id := range a.writes {
-		if _, ok := b.writes[id]; ok {
-			return true
-		}
-	}
-
-	for id := range a.writes {
-		if _, ok := b.reads[id]; ok {
-			return true
-		}
-	}
-	for id := range b.writes {
-		if _, ok := a.reads[id]; ok {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (s *Scheduler) RunInit(w *World) {

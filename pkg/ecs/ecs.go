@@ -89,17 +89,17 @@ func (engine *ECSEngine) RegisterPluginFunc(plugin PluginFunc) {
 }
 
 // RegisterSystem registers the system sys using the optional options opts.
-// Calls while the engine is running will panic.
-func (engine *ECSEngine) RegisterSystem(sys System, opts ...SystemOption) {
+// Returns a SystemRef. Calls while the engine is running will panic.
+func (engine *ECSEngine) RegisterSystem(sys System, opts ...SystemOption) SystemRef {
 	engine.tryRegister()
-	engine.scheduler.AddSystem(sys, opts)
+	return engine.scheduler.AddSystem(sys, opts)
 }
 
 // RegisterSystem registers the system sys using the optional options opts.
-// Calls while the engine is running will panic.
-func (engine *ECSEngine) RegisterSystemFunc(sys SystemFunc, opts ...SystemOption) {
+// Returns a SystemRef. Calls while the engine is running will panic.
+func (engine *ECSEngine) RegisterSystemFunc(sys SystemFunc, opts ...SystemOption) SystemRef {
 	engine.tryRegister()
-	engine.scheduler.AddSystem(sys, opts)
+	return engine.scheduler.AddSystem(sys, opts)
 }
 
 // RegisterComponent registers a new component store
