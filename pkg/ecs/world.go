@@ -5,6 +5,7 @@ import (
 	"iter"
 	"reflect"
 	"sync"
+	"sync/atomic"
 )
 
 // World contains the state of an ECSEngine.
@@ -15,18 +16,21 @@ type World struct {
 	singletons    map[reflect.Type]any
 	messages      map[reflect.Type]typedMessageStore
 	autoComponent uint16
+	autoEntity    uint64
 }
 
 // NewWorld creates a new World.
 func NewWorld() *World {
-	return &World{
+	w := &World{
 		entities:      make(map[Entity]struct{}),
 		stores:        make(map[reflect.Type]typedStore),
 		storesById:    make(map[uint16]typedStore),
 		singletons:    make(map[reflect.Type]any),
 		messages:      make(map[reflect.Type]typedMessageStore),
 		autoComponent: 10_000,
+		autoEntity:    100_000,
 	}
+	return w
 }
 
 // ==================================================================
@@ -35,6 +39,10 @@ func NewWorld() *World {
 
 // Entity represents an ECS entity.
 type Entity uint64
+
+func (w *World) allocateEntity() Entity {
+	return Entity(atomic.AddUint64(&w.autoEntity, 1))
+}
 
 func (w *World) entityExists(e Entity) bool {
 	_, exists := w.entities[e]

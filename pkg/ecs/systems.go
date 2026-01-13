@@ -283,7 +283,17 @@ func (s *Scheduler) computeBatches(nodes []*systemNode) [][]*systemNode {
 }
 
 func (s *Scheduler) RunInit(w *World) {
+	for _, sys := range s.systems {
+		sys.commands.world = w
+	}
+
+	for _, sys := range s.endSystems {
+		sys.commands.world = w
+	}
+
 	for _, sys := range s.initSystems {
+		sys.commands.world = w
+
 		ctx := SystemContext{
 			World:    w,
 			Commands: sys.commands,
@@ -381,7 +391,13 @@ type Command struct {
 // A CommandBuffer collects commands from systems and executes
 // them at the end of the tick.
 type CommandBuffer struct {
+	world    *World
 	commands []Command
+}
+
+// NewCommandBuffer creates a new CommandBuffer.
+func NewCommandBuffer(world *World) *CommandBuffer {
+	return &CommandBuffer{world: world}
 }
 
 // Reset resets the command buffer.
@@ -393,8 +409,6 @@ func (cb *CommandBuffer) Reset() {
 func (cb *CommandBuffer) GetCommands() []Command {
 	return cb.commands
 }
-
-// TODO Auto entities
 
 // CreateEntity inserts a create-entity-command to cb.
 func (cb *CommandBuffer) CreateEntity(e Entity, initial ...any) {
@@ -409,6 +423,26 @@ func (cb *CommandBuffer) CreateEntity(e Entity, initial ...any) {
 		Values:    values,
 		Timestamp: time.Now().UnixNano(),
 	})
+}
+
+// CreateEntityAuto inserts a create-entity-command to cb.
+// Generates an identifier internaly and returns it.
+func (cb *CommandBuffer) CreateEntityAuto(initial ...any) Entity {
+	e := cb.world.allocateEntity()
+
+	values := make(map[reflect.Type]any)
+	for _, v := range initial {
+		values[reflect.TypeOf(v)] = v
+	}
+
+	cb.commands = append(cb.commands, Command{
+		Op:        CreateEntityCommand,
+		Entity:    e,
+		Values:    values,
+		Timestamp: time.Now().UnixNano(),
+	})
+
+	return e
 }
 
 // DestroyEntity inserts a destroy-entity-command to cb.

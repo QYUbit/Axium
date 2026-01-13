@@ -36,7 +36,7 @@ engine := NewEngine()
 AutoRegisterComponent[Position](engine) // Generates a component id internally
 ```
 
-To interact with the worlds data you have to use systems. A system is a funtion that takes a `SystemContext` as an argument. Systems can be registered with `ecs.RegisterSystem(system func(SystemContext))`.
+To interact with the worlds data you have to use systems. A system is a funtion that takes a `SystemContext` as an argument. Systems can be registered with `engine.RegisterSystem(system System)` and `ecs.RegisterSystemFunc(fn SystemFunc)`.
 
 ```Go
 func MySystem(ctx SystemContext) {
@@ -137,7 +137,7 @@ func MovementSystem(ctx SystemContext) {
     query := Query2[Position, Velocity](ctx.World)
 
     for row := query.Iter() {
-        pos := row.Mut1()
+        pos := row.Get1()
         vel := row.Get2()
         pos.X += vel.X
         pos.Y += vel.Y
@@ -153,7 +153,7 @@ engine.RegisterSystemFunc(
 
 ## Event Loop
 
-`(*ecs.ECSEngine).Run()` starts the event loop. `(*ecs.ECSEngine).Close()` waits until the current tick is completed and stops the loop. All registrations must be completed before `(*ecs.ECSEngine).Run()` is called.
+`(*ECSEngine).Run()` starts the event loop. `(*ECSEngine).Close()` waits until the current tick is completed and stops the loop. All registrations must be completed before `(*ECSEngine).Run()` is called.
 
 Tick flow:
 
@@ -167,6 +167,46 @@ Tick flow:
 
 5. Message queues are swapped.
 
-## Todos
+## Dirty Tracking
 
-- Debug tools & Testing
+Since this ECS is designed to be a fitting solution for authorative game-servers, it is build with client synchronization in mind.
+
+### Mark dirty
+
+If you want to mark a component as dirty you have to call `row.Mut()` instead of calling `row.Get()` while retrieving it. Those two functions do exactly the same, but `row.Mut()` additionaly marks the component as dirty.
+
+```Go
+type Position struct {X, Y float64}
+type Velocity struct {X, Y float64}
+
+func MovementSystem(ctx SystemContext) {
+    query := Query2[Position, Velocity](ctx)
+
+    for row := range query.Iter() {
+        pos := row.Mut1() // We want to mutate pos, therefore we use Mut
+        vel := row.Get2()
+        pos.X += vel.X
+        pos.Y += vel.Y
+    }
+}
+```
+
+Alternatively you can mark a whole component type as dirty. It is a bit faster, but not as visually clear and precise (components could get saved as dirty, even when they are not).
+
+```Go
+type Position struct {X, Y float64}
+type Velocity struct {X, Y float64}
+
+func MovementSystem(ctx SystemContext) {
+    query := Query2[Position, Velocity](ctx)
+
+    query.MarkDirty1() // ALL Position components marked as dirty
+
+    for row := range query.Iter() {
+        pos := row.Get1() // We don't need Mut, component is already dirty
+        vel := row.Get2()
+        pos.X += vel.X
+        pos.Y += vel.Y
+    }
+}
+```

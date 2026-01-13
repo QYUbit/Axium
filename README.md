@@ -8,9 +8,9 @@ Building online multiplayer games is hard: You have to deal with netcode, client
 
 ## Packages
 
-Axium consists of multible packages. Those are:
+Imagine Axium as a toolbox; it consists of multiple packages. Those are:
 
-Note: At the moment there is just one; more are planned
+Note: At the moment there is just one. More are planned.
 
 ### ECS
 
@@ -26,4 +26,4 @@ Issues and PRs are welcome.
 
 ## License
 
-The whole project is licensed under the [MIT License](https://github.com/QYUbit/Axium/blob/main/LICENSE)
+Axium is governed under the [MIT License](https://github.com/QYUbit/Axium/blob/main/LICENSE)
