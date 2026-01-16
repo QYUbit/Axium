@@ -10,11 +10,15 @@ Building online multiplayer games is hard: You have to deal with netcode, client
 
 Imagine Axium as a toolbox; it consists of multiple packages. Those are:
 
-Note: At the moment there is just one. More are planned.
+Note: At the moment there are just two. More are planned.
 
 ### ECS
 
 A capable, fast and type safe Entity Component System (ECS), enabeling an organized way to store, edit and filter your game state. Read more: [ECS Docs](https://github.com/QYUbit/Axium/blob/main/pkg/ecs/README.md)
+
+### Transport
+
+This package is an abstraction for bi-directional network communication. Adapters for various transports (e.g. quic, websockets) can implement it's definitions. Transport is useful since it serves as a common interface for the transport layer of a game server. It can be used by future higher level packages like ECS for example.
 
 ## Disclaimer
 
