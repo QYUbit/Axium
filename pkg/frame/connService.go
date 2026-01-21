@@ -8,12 +8,12 @@ import (
 
 type connService struct {
 	useUnreliable bool
-	msgService    *messageService
+	router        *Router
 	codec         Codec
 }
 
 func (h *connService) Handle(ctx context.Context, peer transport.Peer) {
-	ses := newSession(peer)
+	ses := newSession(peer, h.codec)
 
 	go h.read(ctx, ses)
 	if h.useUnreliable {
@@ -38,7 +38,7 @@ func (h *connService) read(ctx context.Context, ses *Session) {
 		}
 
 		for _, msg := range msgs {
-			h.msgService.Handle(ctx, ses, msg)
+			h.router.Handle(ctx, ses, msg)
 		}
 	}
 }

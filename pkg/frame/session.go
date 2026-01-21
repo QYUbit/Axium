@@ -13,8 +13,11 @@ type Session struct {
 	done  chan struct{}
 }
 
-func newSession(peer transport.Peer) *Session {
-	return &Session{peer: peer}
+func newSession(peer transport.Peer, codec Codec) *Session {
+	return &Session{
+		peer:  peer,
+		codec: codec,
+	}
 }
 
 func (s *Session) Set(key string, value any) {
@@ -43,6 +46,8 @@ func (s *Session) Push(route string, payload []byte) error {
 
 	return s.send(msg)
 }
+
+// TODO Use channel for backpressure
 
 func (s *Session) send(msg Message) error {
 	return s.codec.Encode(s.peer, msg)

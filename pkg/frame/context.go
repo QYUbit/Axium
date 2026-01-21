@@ -1,6 +1,6 @@
 package frame
 
-type baseContext struct {
+type Context struct {
 	Session *Session
 	ReqID   uint64
 	Path    string
@@ -8,45 +8,43 @@ type baseContext struct {
 	serializer Serializer
 }
 
-func (c *baseContext) copy() *baseContext {
-	return &baseContext{
+func (c *Context) IsRequest() bool {
+	return c.ReqID != 0
+}
+
+func (c *Context) Copy() *Context {
+	return &Context{
 		Session: c.Session,
 		ReqID:   c.ReqID,
 		Path:    c.Path,
 	}
 }
 
-func (c *baseContext) reset() {
+func (c *Context) reset() {
 	c.Session = nil
 	c.ReqID = 0
 	c.Path = ""
 	c.serializer = nil
 }
 
-type Context[T any] struct {
-	*baseContext
-	Msg *T
-}
-
-func (c *Context[T]) IsRequest() bool {
-	return c.ReqID != 0
-}
-
-func (c *Context[T]) Copy() *Context[T] {
-	return &Context[T]{
-		baseContext: c.baseContext.copy(),
-		Msg:         c.Msg,
-	}
-}
-
-func (c *Context[T]) Respond(v any) error {
+func (c *Context) Respond(v any) error {
 	if !c.IsRequest() {
 		return nil // TODO Error
 	}
 
-	data, err := c.serializer.Marshal(v)
-	if err != nil {
-		return err
+	var err error
+	var data []byte
+
+	switch val := v.(type) {
+	case []byte:
+		data = val
+	case string:
+		data = []byte(val)
+	default:
+		data, err = c.serializer.Marshal(v)
+		if err != nil {
+			return err
+		}
 	}
 
 	msg := Message{

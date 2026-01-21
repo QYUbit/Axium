@@ -2,64 +2,99 @@ package frame
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"sync"
 )
 
-type HandlerFunc[T any] func(c *Context[T]) error
+var (
+	typeOfBytes  = reflect.TypeFor[[]byte]()
+	typeOfString = reflect.TypeFor[string]()
+)
 
-type MessageHandler func(ctx context.Context, ses *Session, msg Message) error
+type HandlerFunc[T any] func(c *Context, payload T) error
 
-type messageService struct {
+type compiledHandler func(ctx context.Context, ses *Session, msg Message) error
+
+type Router struct {
 	serializer Serializer
 	tree       *routerTree
 
 	contextPool sync.Pool
 }
 
-func NewMessageService() *messageService {
-	return &messageService{
+func NewRouter() *Router {
+	return &Router{
 		tree: newRouterTree(),
 		contextPool: sync.Pool{
 			New: func() any {
-				return new(baseContext)
+				return new(Context)
 			},
 		},
 	}
 }
 
-func Register[T any](s *messageService, route string, handler HandlerFunc[T]) {
+func (r *Router) RegisterRaw(route string, handler HandlerFunc[[]byte]) {
 	fn := func(ctx context.Context, ses *Session, msg Message) error {
-
-		base := s.contextPool.Get().(*baseContext)
-		base.Path = msg.Path
-		base.ReqID = msg.ReqID
-		base.Session = ses
-		base.serializer = s.serializer
+		c := r.contextPool.Get().(*Context)
+		c.Path = msg.Path
+		c.ReqID = msg.ReqID
+		c.Session = ses
+		c.serializer = r.serializer
 
 		defer func() {
-			base.reset()
-			s.contextPool.Put(base)
+			c.reset()
+			r.contextPool.Put(c)
 		}()
 
-		payload := new(T)
-		if err := s.serializer.Unmarshal(payload, msg.Data); err != nil {
-			return err
-		}
-
-		c := &Context[T]{
-			baseContext: base,
-			Msg:         payload,
-		}
-
-		return handler(c)
+		return handler(c, msg.Data)
 	}
 
-	s.tree.insert(route, fn)
+	r.tree.insert(route, fn)
 }
 
-func (s *messageService) Handle(ctx context.Context, ses *Session, msg Message) {
-	handlers := s.tree.match(msg.Path)
+func Register[T any](r *Router, route string, handler HandlerFunc[T]) {
+	t := reflect.TypeFor[T]()
+
+	isBytes := t == typeOfBytes
+	isString := t == typeOfString
+
+	fn := func(ctx context.Context, ses *Session, msg Message) error {
+		c := r.contextPool.Get().(*Context)
+		c.Path = msg.Path
+		c.ReqID = msg.ReqID
+		c.Session = ses
+		c.serializer = r.serializer
+
+		defer func() {
+			c.reset()
+			r.contextPool.Put(c)
+		}()
+
+		// TODO Determine payload extraction method at registration time
+
+		var payload T
+
+		if isBytes {
+			payload = any(msg.Data).(T) // Boxing, maybe use unsafe in the future
+
+		} else if isString {
+			payload = any(string(msg.Data)).(T) // String alloc, maybe use unsafe in the future
+
+		} else {
+			if err := r.serializer.Unmarshal(&payload, msg.Data); err != nil {
+				return err
+			}
+		}
+
+		return handler(c, payload)
+	}
+
+	r.tree.insert(route, fn)
+}
+
+func (r *Router) Handle(ctx context.Context, ses *Session, msg Message) {
+	handlers := r.tree.match(msg.Path)
 
 	for _, h := range handlers {
 		if err := h(ctx, ses, msg); err != nil {
@@ -70,8 +105,8 @@ func (s *messageService) Handle(ctx context.Context, ses *Session, msg Message) 
 
 type routerNode struct {
 	children  map[string]*routerNode
-	wildcards []MessageHandler
-	handlers  []MessageHandler
+	wildcards []compiledHandler
+	handlers  []compiledHandler
 }
 
 func newRouterNode() *routerNode {
@@ -83,7 +118,7 @@ func newRouterNode() *routerNode {
 type routerTree struct {
 	sep      string
 	root     *routerNode
-	fallback []MessageHandler
+	fallback []compiledHandler
 }
 
 func newRouterTree() *routerTree {
@@ -93,7 +128,7 @@ func newRouterTree() *routerTree {
 	}
 }
 
-func (t *routerTree) insert(route string, handler MessageHandler) {
+func (t *routerTree) insert(route string, handler compiledHandler) {
 	// TODO Validate route
 
 	parts := strings.Split(route, t.sep)
@@ -126,14 +161,14 @@ func (t *routerTree) insert(route string, handler MessageHandler) {
 	node.handlers = append(node.handlers, handler)
 }
 
-func (t *routerTree) match(route string) []MessageHandler {
+func (t *routerTree) match(route string) []compiledHandler {
 	// TODO Validate route
 
 	parts := strings.Split(route, t.sep)
 
 	node := t.root
 
-	var matching []MessageHandler
+	var matching []compiledHandler
 
 	foundNode := true
 
