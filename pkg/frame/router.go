@@ -14,7 +14,7 @@ var (
 
 type HandlerFunc[T any] func(c *Context, payload T) error
 
-type compiledHandler func(ctx context.Context, ses *Session, msg Message) error
+type compiledHandler func(c *Context, payload []byte) error
 
 type Router struct {
 	serializer Serializer
@@ -35,22 +35,7 @@ func NewRouter() *Router {
 }
 
 func (r *Router) RegisterRaw(route string, handler HandlerFunc[[]byte]) {
-	fn := func(ctx context.Context, ses *Session, msg Message) error {
-		c := r.contextPool.Get().(*Context)
-		c.Path = msg.Path
-		c.ReqID = msg.ReqID
-		c.Session = ses
-		c.serializer = r.serializer
-
-		defer func() {
-			c.reset()
-			r.contextPool.Put(c)
-		}()
-
-		return handler(c, msg.Data)
-	}
-
-	r.tree.insert(route, fn)
+	r.tree.insert(route, compiledHandler(handler))
 }
 
 func Register[T any](r *Router, route string, handler HandlerFunc[T]) {
@@ -59,30 +44,19 @@ func Register[T any](r *Router, route string, handler HandlerFunc[T]) {
 	isBytes := t == typeOfBytes
 	isString := t == typeOfString
 
-	fn := func(ctx context.Context, ses *Session, msg Message) error {
-		c := r.contextPool.Get().(*Context)
-		c.Path = msg.Path
-		c.ReqID = msg.ReqID
-		c.Session = ses
-		c.serializer = r.serializer
-
-		defer func() {
-			c.reset()
-			r.contextPool.Put(c)
-		}()
-
-		// TODO Determine payload extraction method at registration time
+	fn := func(c *Context, data []byte) error {
+		// TODO Determine payload extraction method at registration time ?
 
 		var payload T
 
 		if isBytes {
-			payload = any(msg.Data).(T) // Boxing, maybe use unsafe in the future
+			payload = any(data).(T) // Boxing, maybe use unsafe in the future
 
 		} else if isString {
-			payload = any(string(msg.Data)).(T) // String alloc, maybe use unsafe in the future
+			payload = any(string(data)).(T) // String alloc, maybe use unsafe in the future
 
 		} else {
-			if err := r.serializer.Unmarshal(&payload, msg.Data); err != nil {
+			if err := r.serializer.Unmarshal(&payload, data); err != nil {
 				return err
 			}
 		}
@@ -96,9 +70,30 @@ func Register[T any](r *Router, route string, handler HandlerFunc[T]) {
 func (r *Router) Handle(ctx context.Context, ses *Session, msg Message) {
 	handlers := r.tree.match(msg.Path)
 
-	for _, h := range handlers {
-		if err := h(ctx, ses, msg); err != nil {
+	c := r.contextPool.Get().(*Context)
+	c.Path = msg.Path
+	c.ReqID = msg.ReqID
+	c.Session = ses
+	c.Values = map[string]any{}
+	c.serializer = r.serializer
+
+	defer func() {
+		c.reset()
+		r.contextPool.Put(c)
+	}()
+
+	defer func() {
+		if rec := recover(); rec != nil {
 			// TODO Log
+		}
+	}()
+
+	for _, h := range handlers {
+		if err := h(c, msg.Data); err != nil {
+			// TODO Log
+		}
+		if c.halt {
+			break
 		}
 	}
 }

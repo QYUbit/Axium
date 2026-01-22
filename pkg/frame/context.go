@@ -4,7 +4,9 @@ type Context struct {
 	Session *Session
 	ReqID   uint64
 	Path    string
+	Values  map[string]any
 
+	halt       bool
 	serializer Serializer
 }
 
@@ -24,7 +26,17 @@ func (c *Context) reset() {
 	c.Session = nil
 	c.ReqID = 0
 	c.Path = ""
+	c.Values = nil
 	c.serializer = nil
+	c.halt = false
+}
+
+func (c *Context) SetSerializer(s Serializer) {
+	c.serializer = s
+}
+
+func (c *Context) Halt() {
+	c.halt = true
 }
 
 func (c *Context) Respond(v any) error {
