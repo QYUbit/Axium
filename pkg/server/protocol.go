@@ -1,4 +1,4 @@
-package frame
+package server
 
 import "io"
 
@@ -21,15 +21,15 @@ type Serializer interface {
 	Unmarshaler
 }
 
-type Encoder interface {
-	Encode(w io.Writer, msg Message) error
+type Writer interface {
+	Write(w io.Writer, msg Message) error
 }
 
-type Decoder interface {
-	Decode(r io.Reader) ([]Message, error)
+type Reader interface {
+	Read(r io.Reader) ([]Message, error)
 }
 
 type Codec interface {
-	Encoder
-	Decoder
+	Writer
+	Reader
 }

@@ -1,10 +1,12 @@
-package frame
+package server
 
 import (
 	"context"
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/QYUbit/Axium/pkg/axlog"
 )
 
 var (
@@ -17,13 +19,13 @@ type HandlerFunc[T any] func(c *Context, payload T) error
 type compiledHandler func(c *Context, payload []byte) error
 
 type Router struct {
-	serializer Serializer
-	tree       *routerTree
-
+	logger      axlog.Logger
+	serializer  Serializer
+	tree        *routerTree
 	contextPool sync.Pool
 }
 
-func NewRouter() *Router {
+func NewRouter(serializer Serializer) *Router {
 	return &Router{
 		tree: newRouterTree(),
 		contextPool: sync.Pool{
@@ -31,6 +33,7 @@ func NewRouter() *Router {
 				return new(Context)
 			},
 		},
+		serializer: serializer,
 	}
 }
 
@@ -67,6 +70,10 @@ func Register[T any](r *Router, route string, handler HandlerFunc[T]) {
 	r.tree.insert(route, fn)
 }
 
+func (r *Router) RegisterFallbackRaw(handler HandlerFunc[[]byte]) {
+	r.tree.insertFallback(compiledHandler(handler))
+}
+
 func (r *Router) Handle(ctx context.Context, ses *Session, msg Message) {
 	handlers := r.tree.match(msg.Path)
 
@@ -84,13 +91,14 @@ func (r *Router) Handle(ctx context.Context, ses *Session, msg Message) {
 
 	defer func() {
 		if rec := recover(); rec != nil {
-			// TODO Log
+			r.logger.Error("message handler paniced", "error", rec)
 		}
 	}()
 
 	for _, h := range handlers {
 		if err := h(c, msg.Data); err != nil {
-			// TODO Log
+			r.logger.Error("message handler failes", "error", err)
+			break
 		}
 		if c.halt {
 			break
@@ -154,6 +162,10 @@ func (t *routerTree) insert(route string, handler compiledHandler) {
 	}
 
 	node.handlers = append(node.handlers, handler)
+}
+
+func (t *routerTree) insertFallback(handler compiledHandler) {
+	t.fallback = append(t.fallback, handler)
 }
 
 func (t *routerTree) match(route string) []compiledHandler {

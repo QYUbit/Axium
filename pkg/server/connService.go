@@ -1,8 +1,9 @@
-package frame
+package server
 
 import (
 	"context"
 
+	"github.com/QYUbit/Axium/pkg/axlog"
 	"github.com/QYUbit/Axium/pkg/transport"
 )
 
@@ -10,6 +11,7 @@ type connService struct {
 	useUnreliable bool
 	router        *Router
 	codec         Codec
+	logger        axlog.Logger
 }
 
 func (h *connService) Handle(ctx context.Context, peer transport.Peer) {
@@ -27,13 +29,13 @@ func (h *connService) read(ctx context.Context, ses *Session) {
 	defer close(ses.done)
 
 	for {
-		msgs, err := h.codec.Decode(ses.peer)
+		msgs, err := h.codec.Read(ses.peer)
 		if err != nil {
 			select {
 			case <-ctx.Done():
 				break
 			default:
-				// TODO Log
+				h.logger.Error("failed to receive reliable message", "error", err)
 			}
 		}
 
@@ -53,7 +55,7 @@ func (h *connService) readUnreliable(ctx context.Context, ses *Session) {
 			case <-ctx.Done():
 				break
 			default:
-				// TODO Log
+				h.logger.Error("failed to receive unreliable message", "error", err)
 			}
 		}
 

@@ -1,4 +1,4 @@
-package frame
+package server
 
 import (
 	"sync"
@@ -47,10 +47,10 @@ func (s *Session) Push(route string, payload []byte) error {
 	return s.send(msg)
 }
 
-// TODO Use channel for backpressure
+// TODO Use channel for backpressure or just SetDeadline, idk
 
 func (s *Session) send(msg Message) error {
-	return s.codec.Encode(s.peer, msg)
+	return s.codec.Write(s.peer, msg)
 }
 
 func (s *Session) Kick(reason string) error {

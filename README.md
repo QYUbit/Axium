@@ -20,6 +20,10 @@ A capable, fast and type safe Entity Component System (ECS), enabeling an organi
 
 This package is an abstraction for bi-directional network communication. Adapters for various transports (e.g. quic, websockets) can implement it's definitions. Transport is useful since it serves as a common interface for the transport layer of a game server. It can be used by future higher level packages like ECS for example.
 
+### Server
+
+The server package manages sessions, orchestrates rooms and routes messages. It uses the transport package for communication and works with flexible interfaces, to be as unopinionated as possible.
+
 ## Disclaimer
 
 This project is still in development, backwards compatibility and production quality are not guaranteed.

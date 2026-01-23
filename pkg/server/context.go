@@ -1,4 +1,4 @@
-package frame
+package server
 
 type Context struct {
 	Session *Session
@@ -41,7 +41,7 @@ func (c *Context) Halt() {
 
 func (c *Context) Respond(v any) error {
 	if !c.IsRequest() {
-		return nil // TODO Error
+		return ErrNotifyResponse
 	}
 
 	var err error
