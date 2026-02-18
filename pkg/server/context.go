@@ -1,19 +1,45 @@
 package server
 
+// The Context struct represents the context of an incomming message.
+// It contains the sender session, the message's path, the message's
+// room and a context specific key-value-store.
+// All handlers involved in a message's handler chain share the same
+// message context.
+// Context structs are being pooled; use the copy method for usage in
+// different go routines.
 type Context struct {
+	// Session which sent the message.
 	Session *Session
-	ReqID   uint64
-	Path    string
-	Values  map[string]any
+
+	// Target room. Can be nil.
+	Room Room
+
+	// RequestID, used to corelate request and response.
+	// RequestIDs equal to 0 represents a notify message.
+	ReqID uint64
+
+	// The message's path.
+	Path string
+
+	// Context key-value-store.
+	Values map[string]any
 
 	halt       bool
 	serializer Serializer
 }
 
-func (c *Context) IsRequest() bool {
-	return c.ReqID != 0
+// used for GC Hygiene
+func (c *Context) reset() {
+	c.ReqID = 0
+	c.Path = ""
+	c.Session = nil
+	c.Room = nil
+	c.Values = nil
+	c.serializer = nil
+	c.halt = false
 }
 
+// Copy returns a copy of a context.
 func (c *Context) Copy() *Context {
 	return &Context{
 		Session: c.Session,
@@ -22,41 +48,40 @@ func (c *Context) Copy() *Context {
 	}
 }
 
-func (c *Context) reset() {
-	c.Session = nil
-	c.ReqID = 0
-	c.Path = ""
-	c.Values = nil
-	c.serializer = nil
-	c.halt = false
+// IsRequest reports whether an incomming message is a request.
+// When IsRequest returns false the message is a notify message.
+func (c *Context) IsRequest() bool {
+	return c.ReqID != 0
 }
 
+// HasRoom reports whether an incomming message is directed to a
+// specific room.
+func (c *Context) HasRoom() bool {
+	return c.Room != nil
+}
+
+// SetSerializer sets a context specific serializer.
 func (c *Context) SetSerializer(s Serializer) {
 	c.serializer = s
 }
 
+// Halt will interrupt the handler chain.
 func (c *Context) Halt() {
 	c.halt = true
 }
 
+// Respond sends a response message. Responses can only be send for
+// request messages.
+// v can be a byte slice, a string
+// or any value that can be serialized by the serializer.
 func (c *Context) Respond(v any) error {
 	if !c.IsRequest() {
 		return ErrNotifyResponse
 	}
 
-	var err error
-	var data []byte
-
-	switch val := v.(type) {
-	case []byte:
-		data = val
-	case string:
-		data = []byte(val)
-	default:
-		data, err = c.serializer.Marshal(v)
-		if err != nil {
-			return err
-		}
+	data, err := marshalPayload(c.serializer, v)
+	if err != nil {
+		return err
 	}
 
 	msg := Message{

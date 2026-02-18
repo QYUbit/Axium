@@ -6,9 +6,9 @@ API reference: [GoDoc](https://pkg.go.dev/github.com/QYUbit/Axium/pkg/ecs)
 
 ## What is an ECS
 
-The Entity Component System paradigm is used to seperate data from logic and to provide a way to modularize code.
-An entity is just an identifier and it does not hold any data on it's own. Components are pure data; they can be
-attached to entities. Systems can query, mutate and process those components.
+The Entity Component System paradigm seperates data from logic and boosts performance relying on CPU-cache friendly data structures such as sparse sets or archtype tables.
+
+An entity is just an identifier and it does not hold any data on it's own. Components are pure data; they can be attached to entities. Systems can query, mutate and process those components.
 
 ## Usage
 
@@ -191,7 +191,7 @@ func MovementSystem(ctx SystemContext) {
 }
 ```
 
-Alternatively you can mark a whole component type as dirty. It is a bit faster, but not as visually clear and precise (components could get saved as dirty, even when they are not).
+Alternatively you can mark a whole component type as dirty. It is a bit faster, but not as visually clear and precise (components could get saved as dirty, even when they are not). It is recommended to avoid `query.MarkDirty()` and to use `row.Mut()`.
 
 ```Go
 type Position struct {X, Y float64}

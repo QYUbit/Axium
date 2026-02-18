@@ -16,11 +16,14 @@ var (
 
 type HandlerFunc[T any] func(c *Context, payload T) error
 
+type RoomHandlerFunc[T any] func(c *Context, r Room, payload T) error
+
 type compiledHandler func(c *Context, payload []byte) error
 
 type Router struct {
 	logger      axlog.Logger
 	serializer  Serializer
+	roomManager *roomManager
 	tree        *routerTree
 	contextPool sync.Pool
 }
@@ -70,6 +73,39 @@ func Register[T any](r *Router, route string, handler HandlerFunc[T]) {
 	r.tree.insert(route, fn)
 }
 
+func RegisterRoomHadler[T any](r *Router, route string, handler RoomHandlerFunc[T]) {
+	t := reflect.TypeFor[T]()
+
+	isBytes := t == typeOfBytes
+	isString := t == typeOfString
+
+	fn := func(c *Context, data []byte) error {
+		// TODO Determine payload extraction method at registration time ?
+
+		var payload T
+
+		if isBytes {
+			payload = any(data).(T) // Boxing, maybe use unsafe in the future
+
+		} else if isString {
+			payload = any(string(data)).(T) // String alloc, maybe use unsafe in the future
+
+		} else {
+			if err := r.serializer.Unmarshal(&payload, data); err != nil {
+				return err
+			}
+		}
+
+		if !c.HasRoom() {
+			return nil // TODO Error
+		}
+
+		return handler(c, c.Room, payload)
+	}
+
+	r.tree.insert(route, fn)
+}
+
 func (r *Router) RegisterFallbackRaw(handler HandlerFunc[[]byte]) {
 	r.tree.insertFallback(compiledHandler(handler))
 }
@@ -83,6 +119,13 @@ func (r *Router) Handle(ctx context.Context, ses *Session, msg Message) {
 	c.Session = ses
 	c.Values = map[string]any{}
 	c.serializer = r.serializer
+	if msg.RoomID != "" {
+		room, ok := r.roomManager.get(msg.RoomID)
+		if !ok {
+			// TODO
+		}
+		c.Room = room
+	}
 
 	defer func() {
 		c.reset()
@@ -105,6 +148,10 @@ func (r *Router) Handle(ctx context.Context, ses *Session, msg Message) {
 		}
 	}
 }
+
+// ==================================================================
+// Router Tree
+// ==================================================================
 
 type routerNode struct {
 	children  map[string]*routerNode
@@ -168,6 +215,8 @@ func (t *routerTree) insertFallback(handler compiledHandler) {
 	t.fallback = append(t.fallback, handler)
 }
 
+// TODO Use iter.Seq ?
+
 func (t *routerTree) match(route string) []compiledHandler {
 	// TODO Validate route
 
@@ -215,4 +264,37 @@ func (t *routerTree) match(route string) []compiledHandler {
 	}
 
 	return matching
+}
+
+func validateRoute(route string, sep string) bool {
+	if sep == "" {
+		return false
+	}
+	if route == "" {
+		return false
+	}
+
+	if strings.HasPrefix(route, sep) {
+		return false
+	}
+	if strings.HasSuffix(route, sep) {
+		return false
+	}
+	if strings.Contains(route, sep+sep) {
+		return false
+	}
+
+	for _, r := range route {
+		switch {
+		case r == rune(sep[0]):
+		case '0' <= r && r <= '9':
+		case 'a' <= r && r <= 'z':
+		case 'A' <= r && r <= 'Z':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+
+	return true
 }
