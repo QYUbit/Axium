@@ -4,6 +4,8 @@ go 1.25
 
 toolchain go1.25.5
 
+// TODO Cleanup go.mod
+
 require github.com/google/uuid v1.6.0
 
 require (

@@ -6,8 +6,6 @@ import (
 	"github.com/QYUbit/Axium/pkg/ecs"
 )
 
-// TODO Move benchmarks in seperate package, check validity of benchmarks
-
 // Benchmark Components
 type BenchPosition struct{ X, Y, Z float64 }
 type BenchVelocity struct{ X, Y, Z float64 }
